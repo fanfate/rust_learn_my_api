@@ -125,11 +125,10 @@ pub async fn create_user(
     let id = sql::create_user(&db, &payload.name, &payload.email)
         .await
         .map_err(ApiError::Sql)?;
-    let user = User {
-        id,
-        name: payload.name,
-        email: payload.email,
-        message: None,
-    };
-    Ok(ApiResponse::success(user))
+    let user = sql::get_user_by_id(&db, id).await.map_err(ApiError::Sql)?;
+    if let Some(user) = user {
+        Ok(ApiResponse::success(user))
+    } else {
+        Err(ApiError::NotFound("新增失败".to_string()))
+    }
 }

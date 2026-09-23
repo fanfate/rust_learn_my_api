@@ -1,4 +1,5 @@
 use crate::response::ApiResponse;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use sqlx;
 use thiserror::Error;
@@ -23,20 +24,14 @@ pub enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        let (code, message) = match &self {
-            ApiError::NotFound(msg) => (404, msg.as_str()),
-            ApiError::BadRequest(msg) => (400, msg.as_str()),
-            ApiError::Unauthorized => (401, "未授权"),
-            ApiError::Internal(msg) => (500, msg.as_str()),
-            ApiError::Sql(_) => (500, "数据库错误"),
+        let (status_code, code, message) = match &self {
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, 404, msg.as_str()),
+            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, 400, msg.as_str()),
+            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, 401, "未授权"),
+            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, 500, msg.as_str()),
+            ApiError::Sql(_) => (StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库错误"),
         };
 
-        ApiResponse::<()>::error(code, message).into_response()
+        ApiResponse::<()>::error(status_code, code, message).into_response()
     }
 }
-
-// impl ApiError {
-//     pub fn from_sqlx_error(err: &sqlx::Error) -> Self {
-//         ApiError::Internal(format!("Internal Error : {:?}.", err))
-//     }
-// }
