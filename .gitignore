@@ -1,0 +1,7 @@
+/target
+
+# sql db
+/data
+
+# env file
+.env
