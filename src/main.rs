@@ -14,7 +14,6 @@ async fn main() {
     let cfg = Config::load();
 
     let db_pool = db::create_pool(&cfg.database_url).await.unwrap();
-    sql::init_db(&db_pool).await.unwrap();
 
     let app = Router::new()
         .route("/health", get(handler::health))
@@ -34,7 +33,7 @@ async fn main() {
         .await
         .unwrap();
 
-    println!("Server running on {0}", &cfg.server_addr);
+    println!("Server running on {0}", cfg.server_addr);
 
     axum::serve(listener, app).await.unwrap();
 }
