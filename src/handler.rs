@@ -32,20 +32,6 @@ pub async fn put_user_id(
     State(db): State<db::Db>,
     Json(payload): Json<UpdateUserRequest>,
 ) -> Result<ApiResponse<User>, ApiError> {
-    // let mut db = db.lock().unwrap();
-    // let user = db
-    //     .get_mut(&user_id)
-    //     .ok_or_else(|| ApiError::NotFound("用户不存在".to_string()))?;
-
-    // if let Some(name) = payload.name {
-    //     user.name = name;
-    // }
-    // if let Some(email) = payload.email {
-    //     user.email = email;
-    // }
-
-    // Ok(ApiResponse::success(user.clone()))
-    //
     let mut user = sql::get_user_by_id(&db, user_id)
         .await
         .map_err(ApiError::Sql)?;
@@ -65,7 +51,7 @@ pub async fn put_user_id(
                 .await
                 .map_err(ApiError::Sql)?;
             if !res {
-                Err(ApiError::Internal("更新失败".to_string()))
+                Err(ApiError::NotFound("用户不存在".to_string()))
             } else {
                 Ok(ApiResponse::success(user.clone()))
             }
@@ -81,11 +67,6 @@ pub async fn delete_user_id(
     Path(user_id): Path<i64>,
     State(db): State<db::Db>,
 ) -> Result<ApiResponse<User>, ApiError> {
-    // let mut db = db.lock().unwrap();
-    // db.remove(&user_id)
-    //     .ok_or_else(|| ApiError::NotFound("用户不存在".to_string()))?;
-    // Ok(ApiResponse::success_empty())
-
     let res = sql::delete_user(&db, user_id)
         .await
         .map_err(ApiError::Sql)?;
@@ -110,18 +91,6 @@ pub async fn create_user(
     State(db): State<db::Db>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<ApiResponse<User>, ApiError> {
-    // let mut db = db.lock().unwrap();
-    // let id: i64 = db.keys().max().map_or(1, |max| max + 1);
-    // let user = User {
-    //     id,
-    //     name: payload.name,
-    //     email: payload.email,
-    //     message: None,
-    // };
-
-    // db.insert(id, user.clone());
-    // Ok(ApiResponse::success(user))
-    //
     let id = sql::create_user(&db, &payload.name, &payload.email)
         .await
         .map_err(ApiError::Sql)?;
