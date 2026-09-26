@@ -20,6 +20,9 @@ pub enum ApiError {
 
     #[error("数据库错误：{0}")]
     Sql(sqlx::Error),
+
+    #[error("加密出错：{0}")]
+    Password(argon2::password_hash::Error)
 }
 
 impl IntoResponse for ApiError {
@@ -30,6 +33,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, 401, "未授权"),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, 500, msg.as_str()),
             ApiError::Sql(_) => (StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库错误"),
+            ApiError::Password(_) => (StatusCode::INTERNAL_SERVER_ERROR, 500, "加密出错"),
         };
 
         ApiResponse::<()>::error(status_code, code, message).into_response()

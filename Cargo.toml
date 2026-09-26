@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 argon2 = "0.6.0"
 axum = "0.8.9"
+chrono = "0.4.45"
 dotenvy = "0.15.7"
 jsonwebtoken = "11.1.0"
 serde = { version = "1.0.229", features = ["derive"] }

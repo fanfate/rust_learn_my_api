@@ -8,6 +8,14 @@ pub struct User {
     pub message: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, Clone)]
+pub struct UserResponse {
+    pub id: i64,
+    pub name: String,
+    pub email: String,
+    pub message: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct QueryResponse {
     pub keyword: String,
@@ -32,4 +40,11 @@ pub struct UpdateUserRequest {
 pub struct CreateUserRequest {
     pub name: String,
     pub email: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserAuth {
+    pub id : i64,
+    pub email : String,
+    pub password_hash: String,
 }
