@@ -1,14 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, Clone)]
-pub struct User {
+#[derive(Clone)]
+pub struct UserEntity {
     pub id: i64,
     pub name: String,
     pub email: String,
+    pub password_hash: String,
     pub message: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct UserResponse {
     pub id: i64,
     pub name: String,
@@ -16,35 +17,25 @@ pub struct UserResponse {
     pub message: Option<String>,
 }
 
-#[derive(Serialize)]
-pub struct QueryResponse {
-    pub keyword: String,
-    pub page: Option<usize>,
-    pub size: Option<usize>,
-}
-
-#[derive(Deserialize)]
-pub struct QueryRequest {
-    pub keyword: String,
-    pub page: Option<usize>,
-    pub size: Option<usize>,
+impl From<UserEntity> for UserResponse {
+    fn from(value: UserEntity) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            email: value.email,
+            message: value.message,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 pub struct UpdateUserRequest {
     pub name: Option<String>,
-    pub email: Option<String>,
+    pub message: Option<String>,
 }
 
-#[derive(Deserialize)]
-pub struct CreateUserRequest {
-    pub name: String,
-    pub email: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct UserAuth {
-    pub id : i64,
-    pub email : String,
-    pub password_hash: String,
+#[derive(Deserialize, Serialize)]
+pub struct LoginResponse {
+    pub token: String,
+    pub user: UserResponse,
 }

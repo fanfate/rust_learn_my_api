@@ -37,6 +37,17 @@ impl<T: Serialize> ApiResponse<T> {
         }
     }
 
+    pub fn created(data: T) -> Self {
+        Self {
+            status_code: StatusCode::CREATED,
+            body: ApiBody {
+                code: 201,
+                message: "success".to_string(),
+                data: Some(data),
+            },
+        }
+    }
+
     pub fn error(status_code: StatusCode, code: i32, message: &str) -> Self {
         Self {
             status_code,

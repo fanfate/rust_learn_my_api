@@ -1,7 +1,6 @@
-use chrono::{Duration, Utc};
+use chrono::{TimeDelta, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
@@ -11,19 +10,35 @@ pub struct JwtClaims {
 }
 
 impl JwtClaims {
-    pub fn new(id : i64, ttl : u32) -> Self {
+    pub fn new(id: i64, access_ttl: TimeDelta) -> Self {
         let iat = Utc::now();
-        let exp = iat + Duration::try_seconds(ttl as i64).expect("ttl overflow");
+        let exp = iat + access_ttl;
 
-        Self { sub: id, exp: exp.timestamp(), iat: iat.timestamp() }
+        Self {
+            sub: id,
+            exp: exp.timestamp(),
+            iat: iat.timestamp(),
+        }
     }
 }
 
-pub fn sign(id: i64, ttl: u32, encoding_key: &EncodingKey) -> Result<String, jsonwebtoken::errors::Error> {
-    jsonwebtoken::encode(&Header::default(), &JwtClaims::new(id, ttl), encoding_key)
+pub fn sign(
+    id: i64,
+    access_ttl: TimeDelta,
+    encoding_key: &EncodingKey,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    jsonwebtoken::encode(
+        &Header::default(),
+        &JwtClaims::new(id, access_ttl),
+        encoding_key,
+    )
 }
 
-pub fn validate(token: &str, decoding_key: &DecodingKey) -> Result<JwtClaims, jsonwebtoken::errors::Error> {
+pub fn validate(
+    token: &str,
+    decoding_key: &DecodingKey,
+) -> Result<JwtClaims, jsonwebtoken::errors::Error> {
     let data = jsonwebtoken::decode(token, decoding_key, &Validation::default())?;
     Ok(data.claims)
 }
+

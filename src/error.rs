@@ -1,7 +1,6 @@
 use crate::response::ApiResponse;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use sqlx;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,7 +21,10 @@ pub enum ApiError {
     Sql(sqlx::Error),
 
     #[error("加密出错：{0}")]
-    Password(argon2::password_hash::Error)
+    Password(argon2::password_hash::Error),
+
+    #[error("冲突：{0}")]
+    Conflict(String),
 }
 
 impl IntoResponse for ApiError {
@@ -34,6 +36,7 @@ impl IntoResponse for ApiError {
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, 500, msg.as_str()),
             ApiError::Sql(_) => (StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库错误"),
             ApiError::Password(_) => (StatusCode::INTERNAL_SERVER_ERROR, 500, "加密出错"),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, 409, msg.as_str()),
         };
 
         ApiResponse::<()>::error(status_code, code, message).into_response()
