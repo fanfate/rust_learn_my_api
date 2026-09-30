@@ -6,11 +6,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::{
-    error::ApiError,
-    jwt,
-    models::{LoginResponse, UserEntity},
-    sql,
-    state::AppState,
+    error::ApiError, jwt, models::{LoginResponse, UpdatePasswordRequest, UpdateUserRequest, UserEntity}, sql, state::AppState,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,28 +47,27 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
-impl UserRegister {
-    pub fn hash_password(&self) -> Result<String, argon2::password_hash::Error> {
-        let argon2 = Argon2::default();
-        let password_hash = argon2.hash_password(self.password.as_bytes())?.to_string();
-        Ok(password_hash)
-    }
+fn verify_password(origin_password:&str, hashed_password:&str) -> bool {
+    let argon2 = Argon2::default();
+    let Ok(hash) = PasswordHash::new(hashed_password) else {
+        return false;
+    };
+    argon2
+        .verify_password(origin_password.as_bytes(), &hash)
+        .is_ok()
 }
 
-impl UserLogin {
-    pub fn verify_password(&self, hashed_password: &str) -> bool {
-        let argon2 = Argon2::default();
-        let Ok(hash) = PasswordHash::new(hashed_password) else {
-            return false;
-        };
-        argon2
-            .verify_password(self.password.as_bytes(), &hash)
-            .is_ok()
-    }
+fn hash_password(origin_password:&str) -> Result<String, argon2::password_hash::Error> {
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_password(origin_password.as_bytes())?.to_string();
+    Ok(password_hash)
 }
+
+
+// services
 
 pub async fn register(pool: &SqlitePool, user_sign: &UserRegister) -> Result<UserEntity, ApiError> {
-    let hashed_password = user_sign.hash_password().map_err(ApiError::Password)?;
+    let hashed_password = hash_password(&user_sign.password).map_err(ApiError::Password)?;
     let user_id = sql::create_user(pool, &user_sign.name, &user_sign.email, &hashed_password)
         .await
         .map_err(|e| {
@@ -101,7 +96,7 @@ pub async fn login(
         .await
         .map_err(ApiError::Sql)?
         .ok_or(ApiError::Unauthorized)?;
-    if !user_login.verify_password(&user.password_hash) {
+    if !verify_password(&user_login.password, &user.password_hash) {
         return Err(ApiError::Unauthorized);
     }
     let token = jwt::sign(user.id, access_ttl, encoding_key)
@@ -113,3 +108,63 @@ pub async fn login(
     })
 }
 
+pub async fn update_me(pool: &SqlitePool, user_id : i64, user_update: UpdateUserRequest) -> Result<UserEntity, ApiError> {
+    let mut user = sql::get_user_by_id(pool, user_id)
+        .await
+        .map_err(ApiError::Sql)?.ok_or(ApiError::NotFound("用户不存在".to_string()))?;
+
+    let mut has_change = false;
+    if let Some(name) = user_update.name {
+        user.name = name;
+        has_change = true;
+    }
+    if let Some(message) = user_update.message {
+        user.message = Some(message);
+        has_change = true;
+    }
+
+    if has_change {
+        let res = sql::update_user(pool, user_id, &user.name, &user.message.as_deref())
+            .await
+            .map_err(ApiError::Sql)?;
+        if !res {
+            Err(ApiError::NotFound("用户不存在".to_string()))
+        } else {
+            Ok(user)
+        }
+    } else {
+        Err(ApiError::BadRequest("请输入要修改的参数".to_string()))
+    }
+}
+
+pub async fn delete_me(pool: &SqlitePool, user_id : i64) -> Result<(), ApiError>{
+    let res = sql::delete_user(pool, user_id)
+    .await
+    .map_err(ApiError::Sql)?;
+    if !res {
+        Err(ApiError::NotFound("用户不存在".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
+pub async fn update_password_me(pool: &SqlitePool, user_id : i64, user_update: UpdatePasswordRequest) -> Result<(), ApiError> {
+    let user = sql::get_user_by_id(pool, user_id)
+    .await.map_err(ApiError::Sql)?
+    .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
+
+    if !verify_password(&user_update.old_password, &user.password_hash) {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let new_password_hash = hash_password(&user_update.new_password)
+    .map_err(ApiError::Password)?;
+
+    let update_res = sql::update_user_password(pool, user_id, &new_password_hash).await.map_err(ApiError::Sql)?;
+
+    if update_res {
+        Ok(())
+    } else {
+        Err(ApiError::Internal("更新失败".to_string()))
+    }
+}

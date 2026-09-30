@@ -34,8 +34,14 @@ pub struct UpdateUserRequest {
     pub message: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 pub struct LoginResponse {
     pub token: String,
     pub user: UserResponse,
+}
+
+#[derive(Deserialize)]
+pub struct UpdatePasswordRequest {
+    pub old_password: String,
+    pub new_password: String,
 }
