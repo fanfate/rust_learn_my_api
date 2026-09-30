@@ -41,4 +41,3 @@ pub fn validate(
     let data = jsonwebtoken::decode(token, decoding_key, &Validation::default())?;
     Ok(data.claims)
 }
-

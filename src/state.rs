@@ -8,4 +8,3 @@ pub struct AppState {
     pub encoding_key: EncodingKey,
     pub decoding_key: DecodingKey,
 }
-

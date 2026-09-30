@@ -6,7 +6,11 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::{
-    error::ApiError, jwt, models::{LoginResponse, UpdatePasswordRequest, UpdateUserRequest, UserEntity}, sql, state::AppState,
+    error::ApiError,
+    jwt,
+    models::{LoginResponse, UpdatePasswordRequest, UpdateUserRequest, UserEntity},
+    sql,
+    state::AppState,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,7 +51,7 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
-fn verify_password(origin_password:&str, hashed_password:&str) -> bool {
+fn verify_password(origin_password: &str, hashed_password: &str) -> bool {
     let argon2 = Argon2::default();
     let Ok(hash) = PasswordHash::new(hashed_password) else {
         return false;
@@ -57,12 +61,13 @@ fn verify_password(origin_password:&str, hashed_password:&str) -> bool {
         .is_ok()
 }
 
-fn hash_password(origin_password:&str) -> Result<String, argon2::password_hash::Error> {
+fn hash_password(origin_password: &str) -> Result<String, argon2::password_hash::Error> {
     let argon2 = Argon2::default();
-    let password_hash = argon2.hash_password(origin_password.as_bytes())?.to_string();
+    let password_hash = argon2
+        .hash_password(origin_password.as_bytes())?
+        .to_string();
     Ok(password_hash)
 }
-
 
 // services
 
@@ -108,10 +113,15 @@ pub async fn login(
     })
 }
 
-pub async fn update_me(pool: &SqlitePool, user_id : i64, user_update: UpdateUserRequest) -> Result<UserEntity, ApiError> {
+pub async fn update_me(
+    pool: &SqlitePool,
+    user_id: i64,
+    user_update: UpdateUserRequest,
+) -> Result<UserEntity, ApiError> {
     let mut user = sql::get_user_by_id(pool, user_id)
         .await
-        .map_err(ApiError::Sql)?.ok_or(ApiError::NotFound("用户不存在".to_string()))?;
+        .map_err(ApiError::Sql)?
+        .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
 
     let mut has_change = false;
     if let Some(name) = user_update.name {
@@ -137,10 +147,10 @@ pub async fn update_me(pool: &SqlitePool, user_id : i64, user_update: UpdateUser
     }
 }
 
-pub async fn delete_me(pool: &SqlitePool, user_id : i64) -> Result<(), ApiError>{
+pub async fn delete_me(pool: &SqlitePool, user_id: i64) -> Result<(), ApiError> {
     let res = sql::delete_user(pool, user_id)
-    .await
-    .map_err(ApiError::Sql)?;
+        .await
+        .map_err(ApiError::Sql)?;
     if !res {
         Err(ApiError::NotFound("用户不存在".to_string()))
     } else {
@@ -148,19 +158,25 @@ pub async fn delete_me(pool: &SqlitePool, user_id : i64) -> Result<(), ApiError>
     }
 }
 
-pub async fn update_password_me(pool: &SqlitePool, user_id : i64, user_update: UpdatePasswordRequest) -> Result<(), ApiError> {
+pub async fn update_password_me(
+    pool: &SqlitePool,
+    user_id: i64,
+    user_update: UpdatePasswordRequest,
+) -> Result<(), ApiError> {
     let user = sql::get_user_by_id(pool, user_id)
-    .await.map_err(ApiError::Sql)?
-    .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
+        .await
+        .map_err(ApiError::Sql)?
+        .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
 
     if !verify_password(&user_update.old_password, &user.password_hash) {
         return Err(ApiError::Unauthorized);
     }
 
-    let new_password_hash = hash_password(&user_update.new_password)
-    .map_err(ApiError::Password)?;
+    let new_password_hash = hash_password(&user_update.new_password).map_err(ApiError::Password)?;
 
-    let update_res = sql::update_user_password(pool, user_id, &new_password_hash).await.map_err(ApiError::Sql)?;
+    let update_res = sql::update_user_password(pool, user_id, &new_password_hash)
+        .await
+        .map_err(ApiError::Sql)?;
 
     if update_res {
         Ok(())
