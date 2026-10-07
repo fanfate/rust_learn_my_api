@@ -12,7 +12,8 @@
   - `d90abc2 基本完成鉴权部分的改造`
   - `621604c 增加现阶段AI审计和建议`
 - 自 09-30 review 后 `src/` 未再变更（11 个模块文件，无未提交改动）。
-- **结论：当前项目的核心目标已基本达成**——axum 的核心概念已用掉大半，再做两项收尾（见第三节）即可转场，不必按 plan.md 一路走到 Docker/CI。
+- **结论：当前项目的核心目标已基本达成**——axum 的核心概念已用掉大半，再做"补测试 + admin/role"两项收尾即可转场，不必按 plan.md 一路走到 Docker/CI。
+- **收尾顺序已定案（2026-10-07）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
 ---
 
@@ -45,7 +46,7 @@ GET    /health            健康检查
 | **JWT 只存 id（`sub`），资料必查库** | payload 是 Base64 可读，不放 PII；id 不可变；资料以库为准防陈旧 |
 | **实体/DTO 分离**：`UserEntity`（全列含 hash）+ `UserResponse`（无 hash）+ `From` 转换 | 查询函数只按"查找方式"增减；暴露字段的变化只动 DTO 层 |
 | **`UserEntity` 只派生 `Clone`**（无 Serialize） | 结构上杜绝 hash 被序列化出网；出门唯一路径是 `From → UserResponse` |
-| **service 层窄依赖**：收 `pool` / `encoding_key` / `ttl` 等具体参数，不收 `&AppState` | `Zero To Production` 风格；签名即依赖清单；换容器零成本。窄依赖只约束 service 层以下，handler 收 `&AppState` 天经地义 |
+| **service 层窄依赖**：收 `pool` / `encoding_key` / `ttl` 等具体参数，不收 `&AppState` | `Zero To Production` 风格；签名即依赖清单；换容器零成本；**测试时只需一个 pool，构造成本近乎为零**。窄依赖只约束 service 层以下，handler 收 `&AppState` 天经地义 |
 | **service 返回完整业务产物**（`UserEntity` / `LoginResponse`） | 业务动词闭环；复用方免粘合；事务边界将来收在 service 内 |
 | **service 收 owned 请求体**（如 `update_me` 收 `UpdateUserRequest` 按值） | 要"用掉"字段就收值（直接 move 免 clone），只读才收 `&` |
 | **错误翻译边界**：sql.rs 只出 `sqlx::Error` → auth.rs 翻译成 `ApiError` | 每层只翻译下一层的语言；UNIQUE 冲突 → 409 的翻译发生在 auth.rs |
@@ -85,6 +86,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 2. **`get_me` 绕过 service 层**（对称性）
    - handler 里直接查库 + `if let`；建议下沉为 `auth::get_me(pool, id)`
    - 顺带：`get_user_id` 的 `if let Some/else` 可收敛成 `.ok_or(ApiError::NotFound(..))?`
+   - **写 T1 测试时会自然被逼着修**（handler 里的逻辑没有 service 入口可测）
 3. **`sql::get_all_users` 死代码**
    - 无调用者，binary crate 会报 dead_code warning；建议先删，admin 里程碑时复活
 4. **`DELETE /me` 返回 200 + `data: null`**
@@ -107,7 +109,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 ---
 
-## 三、当前项目的收手标准（2026-10-07 新增）
+## 三、当前项目的收手标准（2026-10-07）
 
 ### 3.1 判断标准
 
@@ -117,8 +119,8 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 | 收尾项 | 为什么值得做 | 会练到 |
 |---|---|---|
+| **测试（T0/T1）**（建议先做） | 为接下来的 admin 改造提供安全网；逼出 `get_me` 的分层问题；兑现窄依赖红利 | `#[sqlx::test]`、真实库测试、断言行为而非实现 |
 | **admin + role**（建议做） | 中间件 / `tower::Layer` 是唯一还没碰的 axum 核心概念 | `Router::nest` + `layer`、`403`、增量迁移、role 写进 Claims 的权衡 |
-| **集成测试**（建议做） | "会写玩具"和"会写项目"的分水岭，也是窄依赖设计兑现红利的地方 | `#[tokio::test]`、内存 sqlite、AAA 结构、测试数据构造 |
 | refresh token（可选） | 业务设计题而非语言题，但能练状态设计与迁移 | token 版本号 / 黑名单、token 轮换 |
 
 ### 3.2 建议降级或跳过
@@ -131,13 +133,76 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 | Docker / CI / 部署 / HTTPS | 运维知识，与 Rust 无关，**学习期性价比最低——plan.md 后半段这些直接跳** |
 | gRPC / 微服务 / 消息队列 | 同上，等有真实需求再说 |
 
-> 一句话：**再做 admin+role 和一组集成测试，这个项目就够本了**；之后它作为"资产"保留，下一个项目会直接复用它。
+> 一句话：**补上测试 + 做完 admin/role，这个项目就够本了**；之后它作为"资产"保留，下一个项目会直接复用它。
 
 ---
 
-## 四、下一个项目：Rust Coding Agent（2026-10-07 定案）
+## 四、测试计划（2026-10-07 定案）
 
-### 4.1 结论
+### 4.1 顺序：先测试，再 admin
+
+接下来要做的 admin + role 是目前为止**风险最高的一次改动**：要动迁移、动 Claims 结构（加 `role`）、动 models 和整条鉴权路径。先有测试网再改，四条理由：
+
+1. **安全网用在刀刃上**：admin 改造会经过 login/register 的既有路径，改完 `cargo test` 一绿即知没破坏旧行为；没有测试就只能靠手点 curl 抽查。
+2. **写测试会逼你先修遗留点 2**：`get_me` 的逻辑写在 handler 里，动手写测试时你会发现它没有 service 入口可测——这份别扭感就是"逻辑住错层"的体感证据。
+3. **窄依赖红利在此兑现**：service 收 `pool` 而非 `&AppState`，测试只要一个连接池就能构造。写不写得出测试，正好检验当初的设计决策。
+4. **测试脚手架是跨项目资产**：Agent 项目 V2 要接回 sqlite + axum，这套写法直接复用。
+
+### 4.2 三层测试
+
+| 层 | 测什么 | 成本 | 时机 |
+|---|---|---|---|
+| **T0 纯函数单测** | `hash_password` / `verify_password`、`jwt::sign` / `validate` | 半小时 | 现在 |
+| **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | 现在 |
+| admin + role | 角色迁移、中间件、403 | 1-2 天 | T1 之后 |
+| **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | 与 admin 一起 |
+
+T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，而 T1 已能覆盖绝大部分业务逻辑。
+
+### 4.3 已核实的实现事实（本机 registry 源码确认，非记忆）
+
+- 本项目 sqlx 为 **0.9.0**，`sqlx::test` 属性宏存在；`macros` / `migrate` 都在 sqlx 的**默认 feature** 里 —— 现有 `features = ["sqlite", "runtime-tokio", "macros"]` 并未关闭默认 feature，所以 **`Cargo.toml` 无需改动**即可使用。
+- **`#[sqlx::test]` 自带异步运行时**（宏展开为 `#[test]` + `sqlx::testing::TestFn::run_test`），**不要再叠 `#[tokio::test]`**。
+- 它给**每个测试建独立库并自动跑迁移**（sqlite 走真实临时文件，跑完删除）。顺带避掉经典坑：手写 `sqlite::memory:` 连接池时内存库按连接隔离，池内多连接 = 多个空库。
+- 读响应体：`axum::body::to_bytes(resp.into_body(), usize::MAX)`（axum 0.8.9 已确认存在）。
+- HTTP 层测试需 **`tower` 作 dev-dependency**（`oneshot` 在 `tower::util` 下，须显式声明 `features = ["util"]`，不能蹭 axum 的间接依赖）。
+- **结构约束**：当前 crate 只有 `src/main.rs`、**没有 lib target**，所以 `tests/` 下的集成测试**无法 `use my_api::...`**。要么加 `src/lib.rs`（`pub mod ...`，main.rs 变薄壳，Zero To Production 的标准结构），要么把测试写成 crate 内 `#[cfg(test)] mod tests`。**现阶段先不动目录结构，T1 写在 crate 内即可。**
+
+### 4.4 一个结构约束：`password` 字段是私有的
+
+`UserRegister` / `UserLogin` 里的 `password` 没有 `pub`。这是有意为之的好设计，但意味着：
+
+- **T1 服务层测试必须写在 crate 内**（`auth.rs` 里的 `#[cfg(test)] mod tests` 可访问同模块私有字段），外部 `tests/` 构造不出这两个结构体。
+- **T2 HTTP 层测试不受影响**——它走 JSON 反序列化（`Deserialize` 已有），字段私有不妨碍。
+
+### 4.5 断言清单
+
+**T0（`src/jwt.rs`、`src/auth.rs` 内）**
+
+- `verify_password`：正确 → true；错误 → false；损坏的 hash 字符串 → false（**不 panic**）
+- `hash_password`：同一明文两次 → 结果不同（证明随机盐生效）；结果以 `$argon2id$` 开头（证明 PHC 格式）
+- `jwt`：签完再验 → `sub` 相同；换另一把 key 验 → `Err`；垃圾字符串 → `Err`；ttl 设为 0/负 → 立即过期的 token 验不过（顺便验证 exp 校验真的在工作）
+
+**T1（`#[sqlx::test]`，一条一测试）**
+
+- 注册成功 → 拿到实体、库里有 hash、hash ≠ 明文
+- 同邮箱再注册 → `ApiError::Conflict`
+- 登录成功 → token 能验出正确的 `sub`
+- 邮箱不存在 / 密码错 → **都是 `Unauthorized`**（守住"防邮箱枚举"的设计）
+- 改资料只传 `name` → `message` 不变；两者都不传 → `BadRequest`
+- 改密码：旧密码错 → 401；旧密码对 → 新密码可登录、旧密码登不上
+- 注销后 → 按 id 查为 `None`（"token 靠查库兜底"的单元版验证）
+
+### 4.6 两个别做的事
+
+- **别追求覆盖率数字**：学习阶段 T0 + T1 覆盖到上面这些就够。
+- **别 mock 数据库**：用真实 sqlite 才有意义；mock 只会让你测出"我的 mock 是对的"。
+
+---
+
+## 五、下一个项目：Rust Coding Agent（2026-10-07 定案）
+
+### 5.1 结论
 
 **采纳"做 Agent"这条路线，但附加三个限定条件**：不用现成 Agent 框架、先做非流式 + CLI、在隔离目录里跑。
 
@@ -147,7 +212,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 - 产出是**可用的东西**（一个能帮你读代码、跑 cargo 的 CLI），比再写一个 Todo List 有意思。
 - 本地模型条件已具备：llama.cpp / CUDA 环境在手，可直接打本地 OpenAI 兼容端点，无需云端 key。
 
-### 4.2 它真在练什么（分两栏看，避免预期错位）
+### 5.2 它真在练什么（分两栏看，避免预期错位）
 
 | 真在练 Rust | 换 Python/TS 写是同一件事 |
 |---|---|
@@ -158,7 +223,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 | 取消与超时（`CancellationToken` + `tokio::select!`） | |
 | async 生命周期、跨 await 的借用 | |
 
-### 4.3 三处要打折的地方（避免踩坑）
+### 5.3 三处要打折的地方（避免踩坑）
 
 1. **"核心代码也就这么一个循环"是极度乐观的说法。** 那 20 行是骨架，真正的活在外面：
    - 流式：手写 SSE 解析，`tool_calls` 分片跨 chunk 累积（最麻烦的一块）
@@ -168,7 +233,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 2. **本地小模型的 tool calling 可靠性差。** 7B 级模型多轮 tool call 容易不听话，会分不清"我循环写错了"还是"模型不肯调工具"。对策：先用云端强模型验证循环正确性，再切本地；或不依赖原生 tool call，让模型输出 JSON 代码块自己解析（早期 agent 的做法，本身是很好的练习）。
 3. **框架生态的名字不重要，别照抄教程。** 各家 agent crate 更新极快，写之前先 `cargo search` / docs.rs 核对当前版本 API，或干脆不用。
 
-### 4.4 必须自己立起来的安全边界（最容易被忽略）
+### 5.4 必须自己立起来的安全边界（最容易被忽略）
 
 Agent 能 `write_file` + `run_command`，等于把"任意文件写入 + 任意命令执行"交给一个概率模型。学习版必须：
 
@@ -177,7 +242,7 @@ Agent 能 `write_file` + `run_command`，等于把"任意文件写入 + 任意�
 - **工具白名单**，不做万能 shell；命令限定在 `cargo check` / `cargo test` 这类
 - 结果输出要**截断**，别把整个文件塞回上下文
 
-### 4.5 备选方向 B：反向代理 / 负载均衡器
+### 5.5 备选方向 B：反向代理 / 负载均衡器
 
 | | 方向 A：Agent | 方向 B：负载均衡器 |
 |---|---|---|
@@ -191,7 +256,7 @@ Agent 能 `write_file` + `run_command`，等于把"任意文件写入 + 任意�
 
 ---
 
-## 五、落地路线：V0 → V3（针对本机环境）
+## 六、落地路线：V0 → V3（针对本机环境）
 
 ```
 V0  第一个周末 · 无框架 · 非流式 · CLI
@@ -223,17 +288,16 @@ V3  继续长
 
 ---
 
-## 六、更远期（原 plan.md 对应，已按 2026-10-07 判断调整）
+## 七、更远期（原 plan.md 对应，已按 2026-10-07 判断调整）
 
 - ~~阶段 10 分层重构~~ → 降级：思想已用上，收益低于成本
 - ~~阶段 13 Docker/CI~~ → 跳过：运维知识，非 Rust 学习目标
 - Refresh token（含"注销后 token 失效"的系统化解法：token 版本号 / 黑名单）
-- 集成测试（`#[tokio::test]` + 内存 sqlite）——已提到第三节，建议尽快做
 - 可选深水区：`QueryBuilder` 动态拼 SQL（关键词搜索 + 分页场景）
 
 ---
 
-## 七、过程中沉淀的通用经验（Rust / Web 通用）
+## 八、过程中沉淀的通用经验（Rust / Web 通用）
 
 - **`?` + `Ok(...)` 是冗余写法**；直接返回表达式
 - **引用背后的字段不能 move**：service 要消费字段就收 owned 值，`clone` 出现时先问"我在防什么"
@@ -250,11 +314,12 @@ V3  继续长
 
 ---
 
-## 八、下一步动作
+## 九、下一步动作（按顺序执行）
 
-1. `git checkout -b admin-role`（或直接在 master 上）：users 表加 `role TEXT NOT NULL DEFAULT 'user'` 迁移
-2. Claims 加 `role` 字段（权衡：免查库 vs 角色变更不即时生效）
-3. `Router::nest("/admin", ...)` + `require_admin` 中间件 → `403` 登场，`get_all_users` 复活（带分页）
-4. 顺手修掉第二节那两个遗留点（`get_me` 下沉 service、`if let` 收敛为 `ok_or`）
-5. 补一组集成测试（注册 → 登录 → 带 token 访问 → 越权 401/403）
-6. 收尾 commit，然后开新仓库做 Agent 的 V0
+1. **T0**（约半小时）：在 `src/jwt.rs`、`src/auth.rs` 内加 `#[cfg(test)] mod tests`，覆盖 4.5 的纯函数断言
+2. **T1**（约半天）：`src/auth.rs` 内用 `#[sqlx::test]` 覆盖 4.5 的服务层断言；`cargo test` 全绿
+3. **顺手修遗留点 2**：`get_me` 下沉为 `auth::get_me`；`get_user_id` / `get_me` 的 `if let` 收敛为 `.ok_or(..)?`
+4. **T2 前置**：加 `src/lib.rs`（模块转 `pub`，`main.rs` 变薄壳）；`Cargo.toml` 加 `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`
+5. **admin + role**：迁移加 `role TEXT NOT NULL DEFAULT 'user'` → Claims 加 `role`（权衡：免查库 vs 角色变更不即时生效）→ `Router::nest("/admin", ...)` + `require_admin` 中间件 → `403` 登场，`get_all_users` 复活（带分页）
+6. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径
+7. `git commit` 收尾 → 开新仓库做 Agent 的 V0
