@@ -184,3 +184,48 @@ pub async fn update_password_me(
         Err(ApiError::Internal("更新失败".to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_hash_success() {
+        let origin_pwd = "123_tmp";
+        let hashed_pwd = hash_password(origin_pwd).unwrap();
+
+        assert!(argon2::PasswordHash::new(&hashed_pwd).is_ok());
+    }
+
+    #[test]
+    fn test_hash_salt() {
+        let origin_pwd = "123tmp";
+        let hashed_0 = hash_password(origin_pwd);
+        let hashed_1 = hash_password(origin_pwd);
+
+        assert_ne!(hashed_0, hashed_1);
+    }
+
+    #[test]
+    fn test_verify_success() {
+        let origin_pwd = "123tmp";
+        let hashed_pwd = hash_password(origin_pwd).unwrap();
+
+        let verified = verify_password(origin_pwd, &hashed_pwd);
+        assert!(verified);
+    }
+
+    #[test]
+    fn test_verify_failed() {
+        let hashd_pwd = hash_password("123tmp").unwrap();
+        let un_verified = verify_password("456tmp", &hashd_pwd);
+        assert!(!un_verified);
+    }
+
+    #[test]
+    fn test_verify_failed_error() {
+        let error_verified = verify_password("123tmp", "error_hash");
+        assert!(!error_verified);
+    }
+}
