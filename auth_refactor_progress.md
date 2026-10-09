@@ -17,9 +17,15 @@
   - 改动集中在 `Cargo.toml`（补 feature）、`src/jwt.rs`、`src/auth.rs`；已于 `e54aff8` **提交**
   - 剩余 1 个 warning：`sql.rs::get_all_users` 死代码（已知欠账，admin 里程碑复活）
 - **T0 过程中修掉一个运行时级缺陷**（`jsonwebtoken` 缺密码学后端，导致 login 与所有受保护端点从未真正跑通过）——详见 **4.7①**，这一条比测试本身更重要。
-- **视图分叉已完成、尚未 commit（2026-10-09）**：`/users/{id}`（匿名观看者）返回 `PublicUserResponse`（无 email），
-  `/me`（本人）返回 `UserResponse`（含 email）；两个读端点共用 `auth::get_user`。已用临时库端到端验证
-  （`POST /auth/login` 首次真正跑通）。当前工作树有 3 个未提交文件：`src/auth.rs`、`src/handler.rs`、`src/models.rs`。
+- **视图分叉已完成并提交（2026-10-09 / commit `0cee939 更新get_me访问权限问题`）**：`/users/{id}`（匿名观看者）返回
+  `PublicUserResponse`（无 email），`/me`（本人）返回 `UserResponse`（含 email）；两个读端点共用 `auth::get_user`。
+  已用临时库端到端验证（`POST /auth/login` 首次真正跑通）。**遗留点 3 正式收尾。**
+- **T1 服务层测试已完成主体（2026-10-09）：`cargo test` → 20 条全绿**
+  - 新增 `#[sqlx::test]` 7 条（register 成功 / 同邮箱冲突 / 短密码、login 成功 / 失败、update、update_password）
+    + 纯函数 `is_valid_password` 1 条；**12 → 20**（jwt.rs 7 + auth.rs 13）。
+  - **遗留点 1（密码策略缺失）已解决**：`register` / `update_password_me` 均先过 `is_valid_password`，弱密码 → `BadRequest`(400)。
+  - 改动仍在工作树（`M src/auth.rs`），**待 commit**。
+  - 3 处 review 打磨项见 **4.8**；`delete_me` 那条断言待补（此前误判"注销函数不存在"）。
 - **结论：核心目标已基本达成**——axum 核心概念已用掉大半，做完"T1 + admin/role"两项即可转场，不必按 plan.md 一路走到 Docker/CI。
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
@@ -89,20 +95,24 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 ### 遗留点（按重要性）
 
-1. **密码策略完全缺失 —— `register` 可以创建空密码账户**（2026-10-08 写 T0 时挖出，非 review 名单内）
+1. **密码策略完全缺失 —— `register` 可以创建空密码账户**（2026-10-08 挖出；**✅ 2026-10-09 已解决**）
    - `auth::register` 从 `user_sign.password` 直接 `hash_password` 入库，中间**零校验**；`update_password_me` 同款，可把密码改成空串
    - 认识根源：**argon2 是密码学原语，只管上界**（`argon2-0.6.0/src/lib.rs:618-627` 的 `verify_inputs` 只拦 `pwd.len() > MAX_PWD_LEN`，防的是资源耗尽），**最小长度是业务策略，库不替你做主**
    - 归属：protocol-independent → service 层；可写成 `auth.rs` 内的自由函数供 `register` / `update_password_me` 共用
    - ⚠️ **不要复用 `ApiError::Password`**（映射 500）——弱密码是客户端问题，必须 `BadRequest`(400)。错的错误类型会把客户端的错报成服务端故障
    - 惯例参照：NIST SP 800-63B（min 8、允许 ≥64、**不强制**字符组合规则，强制反会催生 `Passw0rd!` 类可预测密码）
    - **决定：归入 T1**（先写红的断言，再补实现）
+   - **✅ 已落地（2026-10-09）**：新增自由函数 `is_valid_password`（`auth.rs:72`，当前 `origin_password.len() >= 8`），
+     `register`（`auth.rs:79`）与 `update_password_me`（`auth.rs:171`）开头各拦一道，弱 / 空密码 → `BadRequest`(400)
+     （**未复用** `ApiError::Password`）。T1 用例 `test_register_short_password` 覆盖空串 + 过短。
+     **遗留的小争议见 4.8②（`len()` 数的是字节不是字符）。**
 2. **`message` 永远无法被清空**（语义缺口，当前可接受）
    - 三态模型缺一态：`Some(x)`=设值、`None`=不动，没有"清空回 NULL"的表达
    - 将来解法引子：JSON Merge Patch 三态（缺席/null/值），Rust 里需 `Option<Option<T>>` 或手工解析——留作练习
-3. **`get_me` 绕过 service 层**（对称性）
-   - handler 里直接查库 + `if let`；建议下沉为 `auth::get_me(pool, id)`
-   - 顺带：`get_user_id` 的 `if let Some/else` 可收敛成 `.ok_or(ApiError::NotFound(..))?`
-   - **写 T1 测试时会自然被逼着修**（handler 里的逻辑没有 service 入口可测）
+3. **`get_me` 绕过 service 层**（对称性）—— **✅ 2026-10-09 已解决（commit `0cee939`）**
+   - 已下沉为通用的 `auth::get_user`（`auth.rs:194`，内含查库 + `.ok_or(NotFound)`）；
+     两个读端点（`/me`、`/users/{id}`）共用它，各自 `.into()` 到不同视图；`get_user_id` 的 `if let` 已收敛为 `.ok_or(..)?`
+   - 命名从 `get_me` 改为 `get_user`：按**操作**命名（"取一个用户"），可被多处复用，与"我"无关
 4. **`sql::get_all_users` 死代码**
    - 无调用者，binary crate 会报 dead_code warning；建议先删，admin 里程碑时复活
 5. **`DELETE /me` 返回 200 + `data: null`**
@@ -144,7 +154,10 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 ### 验收清单（改动后手动跑一遍）
 
-> ⚠️ **状态：尚未真正跑通过。** 09-30 改动后 `jsonwebtoken` 缺少密码学后端（见 4.7①），`POST /auth/login` 及第 5-9 条全部会连接中断；`data/users.db` 的 `users` 表 **0 行**即佐证。feature 已于 10-08 修复，**清单待补跑**——这将是 login 与受保护端点第一次被真正执行。
+> **状态：10-09 已部分跑通（用临时库 / 端口 3011）。** 4.7① 的 feature 缺陷已于 10-08 修复，
+> 第 **1-6 条**已实测通过（`register → login → /me`，**`login` 首次真正执行**；`/users/{id}` 匿名返回 3 字段、`/me` 带 token 返回 4 字段）。
+> **第 7-9 条**（`PATCH /me`、`PUT /me/password`、`DELETE /me` 的 HTTP 层行为）**尚未手动跑**——
+> 其服务层逻辑已被 T1 覆盖（见 4.5），HTTP 层留到 T2 一起测。
 
 ```
 1. POST /auth/register            → 201，返回用户 JSON（无 password_hash 字段）
@@ -204,7 +217,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 | 层 | 测什么 | 成本 | 状态 |
 |---|---|---|---|
 | **T0 纯函数单测** | `hash_password` / `verify_password`、`jwt::sign` / `validate` | 半小时 | ✅ **完成 2026-10-08（12 条全绿）** |
-| **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | **下一步** |
+| **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | ✅ **主体完成 2026-10-09（7 条，共 20 全绿）；剩 `delete_me` 1 条 + 3 处打磨（见 4.8）** |
 | admin + role | 角色迁移、中间件、403 | 1-2 天 | T1 之后 |
 | **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | 与 admin 一起 |
 
@@ -254,17 +267,22 @@ T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，�
 
 > 对照原清单：原计划 `jwt` 四条（`sub` 相同 / 换 key → Err / 垃圾串 → Err / ttl≤0 立即过期）全部落地；`hash` 两条、`verify` 三条全部落地。
 
-**T1（`#[sqlx::test]`，一条一测试）**
+**T1（`#[sqlx::test]`，一条一测试）—— ✅ 主体完成 2026-10-09，`cargo test` → 20 passed**
 
-- 注册成功 → 拿到实体、库里有 hash、hash ≠ 明文
-- 同邮箱再注册 → `ApiError::Conflict`
-- **注册拒绝空密码 / 过短密码 → `BadRequest`(400)**（2026-10-08 挖出的缺口，见遗留点 1；**先写红的**）
-- 登录成功 → token 能验出正确的 `sub`
-- 邮箱不存在 / 密码错 → **都是 `Unauthorized`**（守住"防邮箱枚举"的设计）
-- 改资料只传 `name` → `message` 不变；两者都不传 → `BadRequest`
-- 改密码：旧密码错 → 401；旧密码对 → 新密码可登录、旧密码登不上
-- **改密码设成空串 → 同样被拒（400）**（与注册共用同一个策略函数）
-- 注销后 → 按 id 查为 `None`（"token 靠查库兜底"的单元版验证）
+| 测试 | 覆盖 | 状态 |
+|---|---|---|
+| `test_valid_password`（纯函数） | `is_valid_password` 合法 / 空 / 过短 | ✅ |
+| `test_register_success` | 拿到实体 + **round-trip `verify_password`** + hash ≠ 明文 + name/email 落库 | ✅ |
+| `test_register_same_email` | 第二次注册 → `Conflict` | ✅ |
+| `test_register_short_password` | 空串 + `"123"` → `BadRequest`(400) | ✅ |
+| `test_login_success` | 返回体字段一致 + token 的 `sub == user.id`（锁契约） | ✅ |
+| `test_login_failed` | 邮箱不存在 / 密码错 → **都是 `Unauthorized`** | ✅ |
+| `test_update` | 只传 name / name+message / 都不传 → `BadRequest` | ✅（① 断言偏弱） |
+| `test_update_password` | 旧密码错 → 401；新密码短 → 400；改完能登、旧密码登不上 | ✅（③ 钉死了校验顺序） |
+| `delete_me` 后按 id 查为 `None` | **未写**（误判"注销函数不存在"，见 4.8 末） | ⬜ 待补 |
+
+- 通用断言约束：`UserEntity` / `LoginResponse` **无 `Debug`** → 用 `matches!(res, Err(ApiError::X(_)))`，**不要 `unwrap_err()`**。
+- 三条 review 打磨项（断言强度 / 字节 vs 字符 / 校验顺序）详见 **4.8**。
 
 ### 4.6 两个别做的事
 
@@ -381,6 +399,44 @@ base64url = 标准 base64 把 `+`→`-`、`/`→`_`、去掉尾部 `=`；`alg=no
 
 **遗留的方法论盲区（T1 要避免）**：写断言时问一句"**这个 bug 出现时，我会不会恰好也通过？**"
 T0 第一轮就踩过这个坑（`assert!(!validate_err.is_ok())` 换错密钥也通过）。
+
+### 4.8 T1 实施记录与三条 review 结论（2026-10-09）
+
+**产出**：`cargo test` → `20 passed; 0 failed`（5.90s）。构成 = jwt.rs 7 条 + auth.rs 内 T0 纯函数 5 条
++ `test_valid_password` 1 条 + `#[sqlx::test]` 7 条。改动集中在 `src/auth.rs`（新增 `is_valid_password` + 测试模块）。**待 commit。**
+
+**做对的**：`matches!` 全部用对（Conflict / BadRequest / Unauthorized）；`test_login_success` 验了 token 的 `sub`（锁契约而非实现）；
+`test_login_failed` 两个分支都覆盖（守住防邮箱枚举）；`test_register_success` 采纳了 round-trip `verify_password`
+（锁住"存进去能验回来"这个真契约，而非只 `assert_ne!` 明文）；密码策略用 `BadRequest`(400) 而非 `ApiError::Password`(500)——**对了**。
+
+#### ① `test_update` 的"只传 name → message 不变"是**弱断言**（要修）
+
+`assert_eq!(update_res1.message, user.message)` 的两边**一开始都是 `None`**——即使实现把 `message` 误清成 `NULL`，这条**照样通过**。
+
+**这正是 4.7④ 那句"这个 bug 出现时，我会不会恰好也通过？"的实战翻版。** 要真正锁住"不传就不动"，必须**先构造一个已有 `message` 的用户**（先 `update` 设一次），再只传 `name`，断言 `message` 仍是那个**旧值**。
+
+#### ② `is_valid_password` 用 `.len()` = **字节数**，不是**字符数**
+
+ASCII 下等价，但 **3 个汉字的密码 = 9 字节 ≥ 8 → 判"合法"，实际只有 3 个字符**。NIST SP 800-63B 的原文是 min 8 **characters**。
+改成 `chars().count()` 还是继续用字节长度，**都可以选**——但要知道自己选了哪个（与"长度下界是业务策略"一脉相承）。
+
+#### ③ `update_password_me` 把**新密码策略校验放在了旧密码校验之前**——测试已把这顺序钉死
+
+`auth.rs:171` 先查 `is_valid_password(new)`，`:177` 才验 `old_password`。`test_update_password` 第 2 例
+（旧密码错 + 新密码短 → 期望 `BadRequest`）恰好**固化了这个顺序**：不先验旧凭据就报策略错。
+
+两种顺序都说得通（fail-fast vs 先确认身份再谈别的），但**测试已经替你做了决定**——将来若想让"旧密码错 → 401 优先"，实现和测试**必须一起改**。
+
+#### 附带：一条被跳过的断言（`delete_me`）
+
+用户以为"注销函数不存在"——其实存在，只是**命名不对称**：auth 层叫 `delete_me`（`auth.rs:155`），
+sql 层叫 `delete_user`（`sql.rs:57`），在 `auth.rs` 里搜 `delete_user` 自然搜不到。
+
+那条"注销后按 id 查为 `None`"的写法（两者择一）：
+- **sql 层看 `None`**：`sql::get_user_by_id(&pool, id).await` → `assert!(...is_none())`（`None` 只在 sql 层可见）
+- **auth 层看 `NotFound`**：`auth::get_user(&pool, id).await` → `matches!(..., Err(ApiError::NotFound(_)))`（auth 层已把 `None` 翻成 `NotFound`）
+
+> 区分清楚：**登出 / token 失效**确实不存在（第七节的 refresh token / 黑名单），但这条指的是 `DELETE /me`（注销账号）。
 
 ---
 
@@ -503,18 +559,23 @@ V3  继续长
 - **断言要区分"锁契约"还是"锁实现"**：自己的行为 → 钉死具体错误变体；依赖的实现细节 → 只断言"失败"
 - **写断言时问："这个 bug 出现时，我会不会恰好也通过？"** —— 断言强度比断言数量重要
 - **Rust 隐私规则是"定义模块及其后代可见"**：单元测试必须住在被测模块内（或其后代），crate 根放一个 `test.rs` 收集所有测试会看不到私有字段。别为了让测试通过而放宽生产代码的可见性
+- **`.len()` 数的是字节，不是字符**：非 ASCII（中文 / emoji）下会远大于"字符数"。做长度校验前先问"我数的是字节还是字符"
+- **测试会把"实现顺序"固化成"契约"**：校验的先后（如"先验密码策略还是先验旧凭据"）一旦被断言写死，改实现就必须同步改测试——要有意识地选择锁哪个顺序
+- **命名不对称是真实的排查成本**：`auth::delete_me` vs `sql::delete_user` 会让搜索落空，进而误判"函数不存在"。跨层同名操作尽量对齐词根
 
 ---
 
 ## 九、下一步动作（按顺序执行）
 
 1. **T0 ✅ 已完成并提交（2026-10-08 / commit `e54aff8`）**：`src/jwt.rs` 7 条 + `src/auth.rs` 5 条，`cargo test` → 12 passed。
-2. **补跑第二节的验收清单**（此前从未跑通，因 4.7① 的 feature 缺陷）——这将是 `login` 与
-   所有受保护端点第一次被真正执行；重点看第 3、5-9 条。
-3. **T1**（约半天）：`src/auth.rs` 内用 `#[sqlx::test]` 覆盖 4.5 的服务层断言；`cargo test` 全绿。
-   其中**密码策略**（遗留点 1）先写红断言、再补实现，校验走 `BadRequest`(400) 而非 `ApiError::Password`(500)。
-4. **✅ 遗留点 3 已修（2026-10-09，未提交）**：`get_me` 逻辑下沉为通用的 `auth::get_user`；两个读端点共用之，
-   `get_user_id` 改返 `PublicUserResponse`（视图分叉，见第二节末）。**待办：把这 3 个文件 commit**，再进 T1。
+2. **✅ 遗留点 3 已修并提交（2026-10-09 / commit `0cee939`）**：`get_me` 逻辑下沉为通用的 `auth::get_user`；
+   两个读端点共用之，`get_user_id` 改返 `PublicUserResponse`（视图分叉，见第二节末）。
+3. **T1 主体已完成（2026-10-09，未提交）**：`#[sqlx::test]` 7 条 + 纯函数 1 条，`cargo test` → **20 passed**。收尾三步：
+   - **a.** 补 `delete_me` 那条断言（写法见 **4.8** 末）
+   - **b.** 修 `test_update` 的弱断言（先构造带 `message` 的用户再只传 name，见 **4.8①**）
+   - **c.** `is_valid_password` 决定用 `.len()` 还是 `chars().count()`（**4.8②**）；确认 `update_password_me` 的校验顺序是否有意（**4.8③**）
+   - 全部完成 → **commit**（T1 基线要可回退，再做 admin）
+4. **补跑第二节验收清单**：10-09 已跑通第 1-6 条（`login` 首次真正执行）；**第 7-9 条**（PATCH / PUT password / DELETE 的 HTTP 层）留到 T2 一起。
 5. **T2 前置**：加 `src/lib.rs`（模块转 `pub`，`main.rs` 变薄壳）；`Cargo.toml` 加
    `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`
 6. **admin + role**：迁移加 `role TEXT NOT NULL DEFAULT 'user'` → Claims 加 `role`（权衡：免查库 vs 角色变更不即时生效）
