@@ -118,10 +118,7 @@ pub async fn update_me(
     user_id: i64,
     user_update: UpdateUserRequest,
 ) -> Result<UserEntity, ApiError> {
-    let mut user = sql::get_user_by_id(pool, user_id)
-        .await
-        .map_err(ApiError::Sql)?
-        .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
+    let mut user = get_user(pool, user_id).await?;
 
     let mut has_change = false;
     if let Some(name) = user_update.name {
@@ -163,10 +160,7 @@ pub async fn update_password_me(
     user_id: i64,
     user_update: UpdatePasswordRequest,
 ) -> Result<(), ApiError> {
-    let user = sql::get_user_by_id(pool, user_id)
-        .await
-        .map_err(ApiError::Sql)?
-        .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
+    let user = get_user(pool, user_id).await?;
 
     if !verify_password(&user_update.old_password, &user.password_hash) {
         return Err(ApiError::Unauthorized);
@@ -183,6 +177,14 @@ pub async fn update_password_me(
     } else {
         Err(ApiError::Internal("更新失败".to_string()))
     }
+}
+
+pub async fn get_user(pool: &SqlitePool, user_id: i64) -> Result<UserEntity, ApiError> {
+    let user = sql::get_user_by_id(pool, user_id)
+        .await
+        .map_err(ApiError::Sql)?
+        .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
+    Ok(user)
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ pub struct UserEntity {
     pub message: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct UserResponse {
     pub id: i64,
     pub name: String,
@@ -23,6 +23,23 @@ impl From<UserEntity> for UserResponse {
             id: value.id,
             name: value.name,
             email: value.email,
+            message: value.message,
+        }
+    }
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct PublicUserResponse {
+    pub id: i64,
+    pub name: String,
+    pub message: Option<String>,
+}
+
+impl From<UserEntity> for PublicUserResponse {
+    fn from(value: UserEntity) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
             message: value.message,
         }
     }

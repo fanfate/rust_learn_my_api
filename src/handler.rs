@@ -1,8 +1,9 @@
 use crate::auth::{self, CurrentUser, UserLogin, UserRegister};
 use crate::error::ApiError;
-use crate::models::{LoginResponse, UpdatePasswordRequest, UpdateUserRequest, UserResponse};
+use crate::models::{
+    LoginResponse, PublicUserResponse, UpdatePasswordRequest, UpdateUserRequest, UserResponse,
+};
 use crate::response::ApiResponse;
-use crate::sql;
 use crate::state::AppState;
 use axum::{
     Json,
@@ -17,15 +18,9 @@ pub async fn health() -> Json<serde_json::Value> {
 pub async fn get_user_id(
     Path(user_id): Path<i64>,
     State(state): State<AppState>,
-) -> Result<ApiResponse<UserResponse>, ApiError> {
-    let user = sql::get_user_by_id(&state.pool, user_id)
-        .await
-        .map_err(ApiError::Sql)?;
-    if let Some(user) = user {
-        Ok(ApiResponse::success(user.into()))
-    } else {
-        Err(ApiError::NotFound("用户不存在".to_string()))
-    }
+) -> Result<ApiResponse<PublicUserResponse>, ApiError> {
+    let user = auth::get_user(&state.pool, user_id).await?;
+    Ok(ApiResponse::success(user.into()))
 }
 
 // me
@@ -33,14 +28,8 @@ pub async fn get_me(
     current: CurrentUser,
     State(state): State<AppState>,
 ) -> Result<ApiResponse<UserResponse>, ApiError> {
-    let user = sql::get_user_by_id(&state.pool, current.id)
-        .await
-        .map_err(ApiError::Sql)?;
-    if let Some(user) = user {
-        Ok(ApiResponse::success(user.into()))
-    } else {
-        Err(ApiError::NotFound("用户不存在".to_string()))
-    }
+    let user = auth::get_user(&state.pool, current.id).await?;
+    Ok(ApiResponse::success(user.into()))
 }
 
 pub async fn change_me(

@@ -1,12 +1,12 @@
 # rust_learn_my_api 鉴权改造 —— 进度记录、Review 与后续路线
 
-> 记录时间：2026-09-30　最近更新：2026-10-08
+> 记录时间：2026-09-30　最近更新：2026-10-09
 > 项目只读，代码由本人手动修改
 > 前置：已完成 rustlings，按 plan.md 学习 axum web api；本次为 JWT 鉴权 + auth 体系改造
 
 ---
 
-## 〇、当前状态速览（2026-10-08）
+## 〇、当前状态速览（2026-10-09）
 
 - 鉴权改造已于 09-30 完成并通过 review，已提交：
   - `d90abc2 基本完成鉴权部分的改造`
@@ -14,9 +14,12 @@
   - `d0b2b98 更新后续计划` / `d3c6573 更新后续计划细节：单元测试部分`
 - **T0 纯函数单测已完成（2026-10-08）：12 条全绿**
   - `src/jwt.rs` 7 条、`src/auth.rs` 5 条；`cargo test` → `12 passed; 0 failed`（0.84s）
-  - 改动集中在 `Cargo.toml`（补 feature）、`src/jwt.rs`、`src/auth.rs`；**尚未 commit**
+  - 改动集中在 `Cargo.toml`（补 feature）、`src/jwt.rs`、`src/auth.rs`；已于 `e54aff8` **提交**
   - 剩余 1 个 warning：`sql.rs::get_all_users` 死代码（已知欠账，admin 里程碑复活）
 - **T0 过程中修掉一个运行时级缺陷**（`jsonwebtoken` 缺密码学后端，导致 login 与所有受保护端点从未真正跑通过）——详见 **4.7①**，这一条比测试本身更重要。
+- **视图分叉已完成、尚未 commit（2026-10-09）**：`/users/{id}`（匿名观看者）返回 `PublicUserResponse`（无 email），
+  `/me`（本人）返回 `UserResponse`（含 email）；两个读端点共用 `auth::get_user`。已用临时库端到端验证
+  （`POST /auth/login` 首次真正跑通）。当前工作树有 3 个未提交文件：`src/auth.rs`、`src/handler.rs`、`src/models.rs`。
 - **结论：核心目标已基本达成**——axum 核心概念已用掉大半，做完"T1 + admin/role"两项即可转场，不必按 plan.md 一路走到 Docker/CI。
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
@@ -50,6 +53,7 @@ GET    /health            健康检查
 | **PATCH /me 部分更新，PUT /me/password 凭据替换** | PATCH = 部分字段更新（Option 字段）；密码是单值凭据整体替换 + 需验证旧凭据，属"动作"，用 PUT |
 | **JWT 只存 id（`sub`），资料必查库** | payload 是 Base64 可读，不放 PII；id 不可变；资料以库为准防陈旧 |
 | **实体/DTO 分离**：`UserEntity`（全列含 hash）+ `UserResponse`（无 hash）+ `From` 转换 | 查询函数只按"查找方式"增减；暴露字段的变化只动 DTO 层 |
+| **视图按"观看者"再分一层**（`UserResponse` 本人 / `PublicUserResponse` 公开） | 端点返回类型 = 该端点观看者有权看到的字段集；观看者不同就不该共享 DTO。字段显式枚举，将来给 `UserEntity` 加列不会自动泄漏（fail-closed） |
 | **`UserEntity` 只派生 `Clone`**（无 Serialize） | 结构上杜绝 hash 被序列化出网；出门唯一路径是 `From → UserResponse` |
 | **service 层窄依赖**：收 `pool` / `encoding_key` / `ttl` 等具体参数，不收 `&AppState` | `Zero To Production` 风格；签名即依赖清单；换容器零成本；**测试时只需一个 pool，构造成本近乎为零**。窄依赖只约束 service 层以下，handler 收 `&AppState` 天经地义 |
 | **service 返回完整业务产物**（`UserEntity` / `LoginResponse`） | 业务动词闭环；复用方免粘合；事务边界将来收在 service 内 |
@@ -70,16 +74,16 @@ state.rs   → AppState { pool, access_ttl: TimeDelta, encoding_key, decoding_ke
 auth.rs    → CurrentUser 提取器 + 密码工具函数 + 6 个 service 函数
              （register / login / update_me / delete_me / update_password_me）
 handler.rs → 三行壳：提取参数 → 调 service → .into() + ApiResponse
-             （Json 永远放参数最后；get_user_id 公开读不走 service）
+             （Json 永远放参数最后；两个读端点共用 auth::get_user，各自 .into() 到不同视图）
 sql.rs     → 只按"查找方式"提供函数，全部返回 UserEntity 或操作结果
              （UPDATE 部分更新用 COALESCE(?, message)）
-models.rs  → UserEntity / UserResponse / 请求体 DTO / LoginResponse
+models.rs  → UserEntity / UserResponse（本人）/ PublicUserResponse（公开）/ 请求体 DTO / LoginResponse
 error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映射
 ```
 
 ---
 
-## 二、Review 结论（2026-09-30）
+## 二、Review 结论与遗留点（2026-09-30，遗留点持续追记）
 
 **整体通过，无编译级问题，架构原则基本全部落地。** 亮点：分层闭环完整、`UserEntity` 无 `Serialize` 的类型级防线、错误翻译位置正确、`jwt.rs` 修掉了 `Ok(?)` 冗余。
 
@@ -104,6 +108,39 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 5. **`DELETE /me` 返回 200 + `data: null`**
    - 可选练习：改成 **204 No Content**，体会"统一信封的合法例外"（返回类型换 `StatusCode`）
 6. 小项：`old_password` 可改名 `current_password`；config 的 ttl `unwrap_or` 静默吞错（已知，暂不管）；DTO 分居 auth.rs / models.rs 两处（有意为之，可接受）
+7. **id 可枚举（`/users/{id}` 公开读）—— 已知遗留，学习阶段决定不动**（2026-10-09 追记）
+   - 事实：`users.id` 是 `AUTOINCREMENT` 且 `/users/{id}` 无鉴权 → 理论上 `for` 循环即可遍历出
+     "有多少用户 / 按注册顺序的用户目录"（email harvesting 的入口）
+   - **为什么现在可接受**：`data/users.db` 的 users 表 0 行、服务仅本地访问 → 当前**没有可枚举的对象**；
+     且该端点返回的 `PublicUserResponse` 已不含 email（字段侧已守住，见下方"两个正交的安全维度"）
+   - **升级触发条件（三条同时满足才值得动）**：端点真正对外 + 有真实用户数据 + 会返回他人信息
+   - **升级路径**：加 `public_id` 列（UUID/随机 token + 唯一索引，API 层只用它定位资源），**不替换自增主键**
+     —— 换主键要付索引碎片 / 存储翻倍 / 可读性下降三重代价，而且**并不解决授权**
+   - ⚠️ **概念别记错**：UUID/`public_id` 是**纵深防御，不是访问控制**。"改 id 拿到别人数据"这个伤害靠**授权检查**兜底，
+     与"ID 长什么样"正交 —— 别把"上了 UUID"当成"授权做完了"
+
+### 两个正交的安全维度：字段可见性 vs 资源可枚举性（2026-10-09）
+
+排 T1 时确认：这两个问题常被混为一谈，但它们**正交、可独立升级**。
+
+| 维度 | 问的问题 | 现状 | 升级项（可延后） |
+|---|---|---|---|
+| **A 字段可见性** | 谁会看到哪些列 | ✅ 已处理：DTO 按观看者分叉（`PublicUserResponse` 无 email） | 窄查询：SQL 只 `SELECT` 需要的列 |
+| **B 资源可枚举性** | id 能不能被遍历 | ⚠️ 遗留：自增 id 可枚举（遗留点 7） | 加 `public_id` 列 |
+
+**"分叉"要分两层看（最容易混的地方）**：
+
+| 层 | 管什么 | 本项目 |
+|---|---|---|
+| **L1 返回类型 / DTO 分叉** | 哪些字段**能出服务边界**（序列化那一步） | ✅ 已做：两个读端点各自的视图类型 |
+| **L2 查询形状（窄查询）** | 敏感列**根本不进内存 / 不出 SQL** | ❌ 未做：两个读端点仍共用 `auth::get_user` → 取整行 `UserEntity` |
+
+- **为什么 L1 才是关键那一层**：它就是本项目一贯的"让类型替我守"（同 `UserEntity` 无 `Serialize`、`password` 私有）。
+  `UserEntity` 没有出口，所以"整行进了内存"本身不构成泄露。L2 只是把同一条边界**再往数据库推一步**，
+  多出的收益是"性能/内存"+"万一将来有人给 entity 加了 `Serialize` 或新写出口"。0 用户 + 本地环境下收益 ≈ 0 → **延后**。
+- **将来做 L2 的形状**（照抄即可）：每个视图一条 `SELECT`，service 直接返视图类型、而不是返 `UserEntity`。
+- **与 UUID 的关系**：L1 已把 `email` 挡在边界外；维度 B（UUID/`public_id`）与维度 A（L1/L2）是**两条独立的轴**。
+  两者都属**纵深防御**，都不能替代**服务端授权检查** —— 别把"上了 UUID"误当成"授权做完了"。
 
 ### 验收清单（改动后手动跑一遍）
 
@@ -471,13 +508,13 @@ V3  继续长
 
 ## 九、下一步动作（按顺序执行）
 
-1. **T0 ✅ 已完成（2026-10-08）**：`src/jwt.rs` 7 条 + `src/auth.rs` 5 条，`cargo test` → 12 passed。
-   改动（`Cargo.toml` 补 `rust_crypto` feature、两个 `#[cfg(test)] mod tests`）**尚未 commit**。
+1. **T0 ✅ 已完成并提交（2026-10-08 / commit `e54aff8`）**：`src/jwt.rs` 7 条 + `src/auth.rs` 5 条，`cargo test` → 12 passed。
 2. **补跑第二节的验收清单**（此前从未跑通，因 4.7① 的 feature 缺陷）——这将是 `login` 与
    所有受保护端点第一次被真正执行；重点看第 3、5-9 条。
 3. **T1**（约半天）：`src/auth.rs` 内用 `#[sqlx::test]` 覆盖 4.5 的服务层断言；`cargo test` 全绿。
    其中**密码策略**（遗留点 1）先写红断言、再补实现，校验走 `BadRequest`(400) 而非 `ApiError::Password`(500)。
-4. **顺手修遗留点 3**：`get_me` 下沉为 `auth::get_me`；`get_user_id` / `get_me` 的 `if let` 收敛为 `.ok_or(..)?`
+4. **✅ 遗留点 3 已修（2026-10-09，未提交）**：`get_me` 逻辑下沉为通用的 `auth::get_user`；两个读端点共用之，
+   `get_user_id` 改返 `PublicUserResponse`（视图分叉，见第二节末）。**待办：把这 3 个文件 commit**，再进 T1。
 5. **T2 前置**：加 `src/lib.rs`（模块转 `pub`，`main.rs` 变薄壳）；`Cargo.toml` 加
    `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`
 6. **admin + role**：迁移加 `role TEXT NOT NULL DEFAULT 'user'` → Claims 加 `role`（权衡：免查库 vs 角色变更不即时生效）
