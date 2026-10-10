@@ -33,7 +33,16 @@
   「**自举 seed（首个）+ `require_admin` 保护的提权端点（后续）**」产生。详见 **3.3**。
 - **role 的类型已定案（2026-10-10）**：DB/JSON 两端是字符串，Rust 内部用 **`enum Role { User, Admin }`**（不用 `String`）；
   落地时 **`query_as!` 必须写列类型注解 `role as "role: Role"`**，否则报 `Role: From<String>`。详见 **3.3⑦⑧**。
-- **结论：核心目标已基本达成**——axum 核心概念已用掉大半，做完"T1 + admin/role"两项即可转场，不必按 plan.md 一路走到 Docker/CI。
+- **T2 前置（lib.rs）已完成并提交（2026-10-10 / commit `6f7c776 设置lib.rs管理mod`）**：新增 `src/lib.rs`
+  （10 个 `pub mod` + `pub fn app(state) -> Router`），`main.rs` 变薄壳（**零 `mod` 声明**，改用 `use my_api::...`）；
+  `cargo test` 仍 **21 绿**。⚠️ `main.rs` 若保留 `mod` 声明会导致 **crate 双编译 + 两份同名类型互不相等**。详见 **4.3**。
+- **role 落地已基本完成（2026-10-10，未提交）**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK(...)`；`Role` enum（3.3⑦）；
+  `UserEntity` / `UserResponse` / `PublicUserResponse` 加 `role`；**三处** SELECT 加 `role as "role: Role"`（3.3⑧）；
+  **`JwtClaims` 已加 `pub role: Role`**（`sign` / `new` 签名随之改，`login` 传 `&user.role`）。详见 **3.3⑥**。
+- **admin 里程碑进行中（2026-10-10）**：`src/middleware.rs` 已建（当前仅占位函数）→ 下一步写 `require_admin` 中间件
+  → `Router::nest("/admin") + layer` → `403` 登场。
+  工作树：`M src/jwt.rs`、`M src/auth.rs`、`M src/lib.rs`、`?? src/middleware.rs`（**均未 commit**）。
+- **结论：核心目标已基本达成**——axum 核心概念已用掉大半，**只剩 admin/role（中间件 / `Layer` 是唯一没碰的核心概念）**，做完即可转场，不必按 plan.md 一路走到 Docker/CI。
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
 ---
@@ -268,6 +277,16 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 **决定：按 A + B 实施；role 写进 Claims（接受"不即时生效"）；`require_admin` 用中间件（`Router::nest("/admin") + layer`）。**
 
+> **✅ 状态（2026-10-10）：已落地生效。** `JwtClaims` 已加 `pub role: Role`（`jwt.rs`），`sign` / `new(id, &Role, ttl)` 签名随之改，`login` 传 `&user.role`
+> （传引用是对的：`login` 之后还要用 `user` 造 `LoginResponse`，避免在调用处 `clone`）。
+>
+> **随"加字段"一起来的第二条后果**：`role` 是**必填**（非 `Option`、无 `#[serde(default)]`）→
+> **此前签发的所有 token 立即失效**——旧 token 里没有 `role`，`validate()` 反序列化 `JwtClaims` 会因缺字段报错 → 被当成 401。
+> 通用形态：**改 Claims 结构 = 强制全员重新登录**（生产里即"发版即登出"）。本项目 0 用户、无存量 token，所以无感。
+> 对 `role` 这类**授权/身份**字段，宁可让它失效，也**不要**用 `#[serde(default)]` 兜底（否则旧 token 会被静默填成默认角色，更危险）。
+>
+> 另：token 里的 `role` **不可伪造**（被签名覆盖）——改它就等于改 payload，签名校验必失败。所以"角色从 token 取"在读侧是安全的，代价只在**新鲜度**。
+
 #### ⑦ role 用什么类型：边界是字符串，内部是 enum
 
 **三层分工 —— DB 与 JSON 是"边界"（字符串是它们的母语），Rust 内部保持类型安全。**
@@ -366,8 +385,8 @@ sqlx::query_as::<_, UserEntity>("SELECT id, role, name, email, password_hash, me
 |---|---|---|---|
 | **T0 纯函数单测** | `hash_password` / `verify_password`、`jwt::sign` / `validate` | 半小时 | ✅ **完成 2026-10-08（12 条全绿）** |
 | **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | ✅ **完成 2026-10-10（8 条，共 21 全绿）** |
-| admin + role | 角色迁移、中间件、403 | 1-2 天 | T1 之后 |
-| **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | 与 admin 一起 |
+| admin + role | 角色迁移、中间件、403 | 1-2 天 | 🔄 **进行中 2026-10-10**（迁移 ✅ / `Role` enum ✅ / Claims ✅ / 中间件待写） |
+| **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | 与 admin 一起（前置 lib.rs ✅ 已完成；`tower` 待加） |
 
 T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，而 T1 已能覆盖绝大部分业务逻辑。
 
@@ -378,7 +397,11 @@ T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，�
 - 它给**每个测试建独立库并自动跑迁移**（sqlite 走真实临时文件，跑完删除）。顺带避掉经典坑：手写 `sqlite::memory:` 连接池时内存库按连接隔离，池内多连接 = 多个空库。
 - 读响应体：`axum::body::to_bytes(resp.into_body(), usize::MAX)`（axum 0.8.9 已确认存在）。
 - HTTP 层测试需 **`tower` 作 dev-dependency**（`oneshot` 在 `tower::util` 下，须显式声明 `features = ["util"]`，不能蹭 axum 的间接依赖）。
-- **结构约束**：当前 crate 只有 `src/main.rs`、**没有 lib target**，所以 `tests/` 下的集成测试**无法 `use my_api::...`**。要么加 `src/lib.rs`（`pub mod ...`，main.rs 变薄壳，Zero To Production 的标准结构），要么把测试写成 crate 内 `#[cfg(test)] mod tests`。**现阶段先不动目录结构，T1 写在 crate 内即可。**
+- **结构（✅ 2026-10-10 已解决）**：原先 crate 只有 `src/main.rs`、**没有 lib target**，`tests/` 下的集成测试**无法 `use my_api::...`**。
+  已加 **`src/lib.rs`**（`pub mod ...` ×10 + `pub fn app(state) -> Router`，`main.rs` 变薄壳 —— Zero To Production 的标准结构；commit `6f7c776`）。
+  ⚠️ **`main.rs` 必须删掉全部 `mod` 声明**，否则 bin 与 lib 各编译一遍，两份同名类型**互不相等**（`my_api::auth::UserEntity` ≠ bin 内 `crate::auth::UserEntity`），
+  表现为莫名其妙的类型不匹配。**副作用**：转 lib 后 `pub` 项算"公开 API"，dead_code 报警对它们失效（见第八节）。
+  T1 仍写在 crate 内（`auth.rs` 的 `#[cfg(test)] mod tests`，可访问私有字段）。
 - **T0/T1 都不需要新增依赖**：标准 `#[test]` 与 `#[sqlx::test]` 已够用（`[dev-dependencies]` 目前仍为空）。
 
 ### 4.4 一个结构约束：`password` 字段是私有的
@@ -749,6 +772,12 @@ V3  继续长
   所以自定义类型（enum / newtype）**必须写列类型注解** `col as "col: Type"`，否则报 `X: From<String>`。所谓"绕过"（给类型实现 `From<String>`）会牺牲 fail-closed，别用
 - **"有限、封闭、语义明确的集合"用 enum，别用 `String`**（角色、状态、来源…）：DB/JSON 是**边界**（字符串是它们的母语），程序**内部**保持类型安全。
   `String` 会把"拼写错 / 非穷尽 match / 大小写不一致"三类错误全部推迟到运行时，而且往往是**静默**的
+- **往 Claims 加"必填"字段 = 存量 token 全失效**：claims 反序列化是严格 match，非 `Option` 又无 `#[serde(default)]` 的新字段一旦缺失就报错 →
+  `validate()` 失败 → 401。所以"改 Claims 结构" = **强制全员重新登录**（生产里就是"发版即登出"）。加字段前先问："要不要 `#[serde(default)]`？"——
+  对 `role` / `sub` 这类**授权 / 身份**字段，答案通常是"**不要**"：宁可让它失效，也别让旧 token 被静默填成默认角色
+- **转成 lib target 后，`dead_code` 对 `pub` 项失效**：`pub fn` / `pub` 字段算作"公开 API"，编译器不再报 "never used"。
+  于是那条 `get_all_users` 未使用告警会**凭空消失** —— **不是因为它被用上了**。别拿 warning 的消失当作"接线完成"的证据；
+  反过来说，改成 lib 之后，**"写了但忘了用"这类错误再也收不到编译器提醒了**
 
 ---
 
@@ -761,15 +790,19 @@ V3  继续长
    4.8 的 ①~⑤ **全部补齐**（`chars().count()` / 先验旧密码 + **顺序哨兵** / `test_update` 强断言 / **落库重读** / `delete_me` 三条断言）。
    工作树已干净。顺手可把哨兵处重复的 `update_pwd_1` / `pwd_res1` 改成不同名字（非必须）。
 4. **补跑第二节验收清单**：10-09 已跑通第 1-6 条（`login` 首次真正执行）；**第 7-9 条**（PATCH / PUT password / DELETE 的 HTTP 层）留到 T2 一起。
-5. **T2 前置**：加 `src/lib.rs`（模块转 `pub`，`main.rs` 变薄壳）；`Cargo.toml` 加
-   `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`
-6. **admin + role**（设计已定案，见 **3.3**）：
-   - **a.** 迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))`（`UserEntity` 同步加 `role: Role`；
-     `sql.rs` 的**三处** SELECT 列清单要跟着改，并按 **3.3⑧** 写类型注解 `role as "role: Role"`，否则报 `Role: From<String>`）
-   - **b.** **自举首个 admin**：`seeds/00_admin.sql`（`INSERT ... role='admin'`），手动执行一次。
+5. **T2 前置 —— ✅ `src/lib.rs` 已完成并提交（2026-10-10 / commit `6f7c776`）**：10 个 `pub mod` + `pub fn app(state) -> Router`，
+   `main.rs` 变薄壳（**零 `mod` 声明**，改用 `use my_api::...`）；`cargo test` 仍 21 绿。
+   - ⚠️ 坑：`main.rs` 若保留 `mod` 声明 → **crate 双编译 + 两份同名类型互不相等**（详见 **4.3** / 第八节）。
+   - ⏳ **剩余**：`Cargo.toml` 加 `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`（**T2 才用**，现在不加无妨；读 body 用 `axum::body::to_bytes`，无需额外依赖）。
+6. **admin + role**（设计已定案，见 **3.3**）—— 🔄 **进行中（2026-10-10）**：
+   - **a. ✅ 已完成**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))`；`Role` enum（3.3⑦）；`UserEntity` / `UserResponse` /
+     `PublicUserResponse` 加 `role`；**三处** SELECT 加类型注解 `role as "role: Role"`（3.3⑧）。
+   - **b. ⬜ 自举首个 admin**：`seeds/00_admin.sql`（`INSERT ... role='admin'`），手动执行一次。
      ⚠️ **注册端点不动，永远产 user**（`UserRegister` 不加 `role` 字段）
-   - **c.** Claims 加 `role`（接受"角色变更不即时生效"，见 3.3⑥）→ `Router::nest("/admin", ...)` + `require_admin` 中间件 → `403` 登场
-   - **d.** 提权端点 `PATCH /admin/users/{id}/role`（可选但推荐：中间件唯一能用上的**写**路径）
-   - **e.** `get_all_users` 复活（带分页）；据此决定 `UserResponse` 是否加 `role`
-7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径
+   - **c. 🔄 一半**：**Claims 加 `role` ✅ 已完成**（`jwt.rs`：`pub role: Role`；`sign` / `new` 签名随之改、`login` 传 `&user.role`）；
+     **待做**：`Router::nest("/admin", ...)` + `require_admin` 中间件（`src/middleware.rs` 已建，当前仅占位函数）→ `403` 登场。
+     接受"角色变更不即时生效"，见 **3.3⑥**
+   - **d. ⬜** 提权端点 `PATCH /admin/users/{id}/role`（可选但推荐：中间件唯一能用上的**写**路径）
+   - **e. ⬜** `get_all_users` 复活（带分页）；据此决定 `UserResponse` 是否加 `role`
+7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径（前置 lib.rs ✅ 已就位）
 8. `git commit` 收尾 → 开新仓库做 Agent 的 V0

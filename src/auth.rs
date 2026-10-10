@@ -112,7 +112,7 @@ pub async fn login(
     if !verify_password(&user_login.password, &user.password_hash) {
         return Err(ApiError::Unauthorized);
     }
-    let token = jwt::sign(user.id, access_ttl, encoding_key)
+    let token = jwt::sign(user.id, &user.role, access_ttl, encoding_key)
         .map_err(|_| ApiError::Internal("签发token出错！".to_string()))?;
 
     Ok(LoginResponse {

@@ -2,20 +2,24 @@ use chrono::{TimeDelta, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
+use crate::models::Role;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
     pub sub: i64,
+    pub role: Role,
     exp: i64,
     iat: i64,
 }
 
 impl JwtClaims {
-    pub fn new(id: i64, access_ttl: TimeDelta) -> Self {
+    pub fn new(id: i64, role: &Role, access_ttl: TimeDelta) -> Self {
         let iat = Utc::now();
         let exp = iat + access_ttl;
 
         Self {
             sub: id,
+            role: role.clone(),
             exp: exp.timestamp(),
             iat: iat.timestamp(),
         }
@@ -24,12 +28,13 @@ impl JwtClaims {
 
 pub fn sign(
     id: i64,
+    role: &Role,
     access_ttl: TimeDelta,
     encoding_key: &EncodingKey,
 ) -> Result<String, jsonwebtoken::errors::Error> {
     jsonwebtoken::encode(
         &Header::default(),
-        &JwtClaims::new(id, access_ttl),
+        &JwtClaims::new(id, role, access_ttl),
         encoding_key,
     )
 }
@@ -53,7 +58,7 @@ mod tests {
         let access_ttl = TimeDelta::try_seconds(10).unwrap();
         let encoding_key = EncodingKey::from_secret("test".as_bytes());
 
-        let token = sign(id, access_ttl, &encoding_key);
+        let token = sign(id, &Role::User, access_ttl, &encoding_key);
         assert!(token.is_ok());
     }
 
@@ -64,7 +69,7 @@ mod tests {
         let encoding_key = EncodingKey::from_secret("test".as_bytes());
         let decoding_key = DecodingKey::from_secret("test".as_bytes());
 
-        let token = sign(id, access_ttl, &encoding_key).unwrap();
+        let token = sign(id, &Role::User, access_ttl, &encoding_key).unwrap();
 
         let verified_claims = validate(&token, &decoding_key).unwrap();
         assert_eq!(verified_claims.sub, 1);
@@ -101,7 +106,7 @@ mod tests {
         let decoding_key = DecodingKey::from_secret("test".as_bytes());
         let token = jsonwebtoken::encode(
             &Header::new(jsonwebtoken::Algorithm::HS512),
-            &JwtClaims::new(1, access_ttl),
+            &JwtClaims::new(1, &Role::User, access_ttl),
             &encoding_key,
         )
         .unwrap();
@@ -120,7 +125,7 @@ mod tests {
         let access_ttl = TimeDelta::try_seconds(10).unwrap();
         let encoding_key = EncodingKey::from_secret("test".as_bytes());
         let decoding_key = DecodingKey::from_secret("test_another".as_bytes());
-        let token = sign(id, access_ttl, &encoding_key).unwrap();
+        let token = sign(id, &Role::User, access_ttl, &encoding_key).unwrap();
 
         let validate_err = validate(&token, &decoding_key);
 
@@ -136,7 +141,7 @@ mod tests {
         let access_ttl = TimeDelta::try_seconds(-120).unwrap();
         let encoding_key = EncodingKey::from_secret("test".as_bytes());
         let decoding_key = DecodingKey::from_secret("test".as_bytes());
-        let token = sign(id, access_ttl, &encoding_key).unwrap();
+        let token = sign(id, &Role::User, access_ttl, &encoding_key).unwrap();
 
         let validate_err = validate(&token, &decoding_key);
 

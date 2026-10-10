@@ -9,6 +9,7 @@ pub mod db;
 pub mod error;
 pub mod handler;
 pub mod jwt;
+pub mod middleware;
 pub mod models;
 pub mod response;
 pub mod sql;
