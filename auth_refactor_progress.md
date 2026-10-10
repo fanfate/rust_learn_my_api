@@ -1,12 +1,12 @@
 # rust_learn_my_api 鉴权改造 —— 进度记录、Review 与后续路线
 
-> 记录时间：2026-09-30　最近更新：2026-10-09
+> 记录时间：2026-09-30　最近更新：2026-10-10
 > 项目只读，代码由本人手动修改
 > 前置：已完成 rustlings，按 plan.md 学习 axum web api；本次为 JWT 鉴权 + auth 体系改造
 
 ---
 
-## 〇、当前状态速览（2026-10-09）
+## 〇、当前状态速览（2026-10-10）
 
 - 鉴权改造已于 09-30 完成并通过 review，已提交：
   - `d90abc2 基本完成鉴权部分的改造`
@@ -20,12 +20,14 @@
 - **视图分叉已完成并提交（2026-10-09 / commit `0cee939 更新get_me访问权限问题`）**：`/users/{id}`（匿名观看者）返回
   `PublicUserResponse`（无 email），`/me`（本人）返回 `UserResponse`（含 email）；两个读端点共用 `auth::get_user`。
   已用临时库端到端验证（`POST /auth/login` 首次真正跑通）。**遗留点 3 正式收尾。**
-- **T1 服务层测试已完成主体（2026-10-09）：`cargo test` → 20 条全绿**
-  - 新增 `#[sqlx::test]` 7 条（register 成功 / 同邮箱冲突 / 短密码、login 成功 / 失败、update、update_password）
-    + 纯函数 `is_valid_password` 1 条；**12 → 20**（jwt.rs 7 + auth.rs 13）。
-  - **遗留点 1（密码策略缺失）已解决**：`register` / `update_password_me` 均先过 `is_valid_password`，弱密码 → `BadRequest`(400)。
-  - 改动仍在工作树（`M src/auth.rs`），**待 commit**。
-  - 3 处 review 打磨项见 **4.8**；`delete_me` 那条断言待补（此前误判"注销函数不存在"）。
+- **T1 服务层测试已完成（2026-10-10）：`cargo test` → 21 条全绿**
+  - `#[sqlx::test]` 8 条（register 成功 / 同邮箱冲突 / 短密码、login 成功 / 失败、update、update_password、**delete_me**）
+    + 纯函数 `is_valid_password` 1 条；**12 → 21**（jwt.rs 7 + auth.rs 14）。
+  - **遗留点 1（密码策略缺失）已解决**：`register` / `update_password_me` 均过 `is_valid_password`，弱密码 → `BadRequest`(400)；
+    长度按 **`chars().count()`**（字符数）计，不再是 `.len()`（字节数）。
+  - **4.8 的 ①~⑤ 全部已处理**：① `test_update` 强断言；② `.len()` → `chars().count()`；③ `update_password_me` 改为**先验旧密码（401 优先）**并补上**顺序哨兵**；
+    ④ `test_update` 末尾加**独立重读**验证落库；⑤ `delete_me` 补 `get_user → NotFound` + 重复注销 → `NotFound`。
+  - 改动仍在工作树（`M src/auth.rs`），**待 commit**（这就是 T1 的可回退基线）。
 - **结论：核心目标已基本达成**——axum 核心概念已用掉大半，做完"T1 + admin/role"两项即可转场，不必按 plan.md 一路走到 Docker/CI。
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
@@ -102,10 +104,10 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
    - ⚠️ **不要复用 `ApiError::Password`**（映射 500）——弱密码是客户端问题，必须 `BadRequest`(400)。错的错误类型会把客户端的错报成服务端故障
    - 惯例参照：NIST SP 800-63B（min 8、允许 ≥64、**不强制**字符组合规则，强制反会催生 `Passw0rd!` 类可预测密码）
    - **决定：归入 T1**（先写红的断言，再补实现）
-   - **✅ 已落地（2026-10-09）**：新增自由函数 `is_valid_password`（`auth.rs:72`，当前 `origin_password.len() >= 8`），
-     `register`（`auth.rs:79`）与 `update_password_me`（`auth.rs:171`）开头各拦一道，弱 / 空密码 → `BadRequest`(400)
+   - **✅ 已落地（2026-10-09 ~ 10-10）**：新增自由函数 `is_valid_password`（`auth.rs:72`，现为 `origin_password.chars().count() >= 8`），
+     `register`（`auth.rs:79`）与 `update_password_me`（`auth.rs:175`）均拦一道，弱 / 空密码 → `BadRequest`(400)
      （**未复用** `ApiError::Password`）。T1 用例 `test_register_short_password` 覆盖空串 + 过短。
-     **遗留的小争议见 4.8②（`len()` 数的是字节不是字符）。**
+     **长度口径已从 `.len()`（字节）改为 `chars().count()`（字符）——详见 4.8②。**
 2. **`message` 永远无法被清空**（语义缺口，当前可接受）
    - 三态模型缺一态：`Some(x)`=设值、`None`=不动，没有"清空回 NULL"的表达
    - 将来解法引子：JSON Merge Patch 三态（缺席/null/值），Rust 里需 `Option<Option<T>>` 或手工解析——留作练习
@@ -217,7 +219,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 | 层 | 测什么 | 成本 | 状态 |
 |---|---|---|---|
 | **T0 纯函数单测** | `hash_password` / `verify_password`、`jwt::sign` / `validate` | 半小时 | ✅ **完成 2026-10-08（12 条全绿）** |
-| **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | ✅ **主体完成 2026-10-09（7 条，共 20 全绿）；剩 `delete_me` 1 条 + 3 处打磨（见 4.8）** |
+| **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | ✅ **完成 2026-10-10（8 条，共 21 全绿）** |
 | admin + role | 角色迁移、中间件、403 | 1-2 天 | T1 之后 |
 | **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | 与 admin 一起 |
 
@@ -267,22 +269,23 @@ T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，�
 
 > 对照原清单：原计划 `jwt` 四条（`sub` 相同 / 换 key → Err / 垃圾串 → Err / ttl≤0 立即过期）全部落地；`hash` 两条、`verify` 三条全部落地。
 
-**T1（`#[sqlx::test]`，一条一测试）—— ✅ 主体完成 2026-10-09，`cargo test` → 20 passed**
+**T1（`#[sqlx::test]`，一条一测试）—— ✅ 完成 2026-10-10，`cargo test` → 21 passed**
 
 | 测试 | 覆盖 | 状态 |
 |---|---|---|
-| `test_valid_password`（纯函数） | `is_valid_password` 合法 / 空 / 过短 | ✅ |
+| `test_valid_password`（纯函数） | `is_valid_password` 合法 / 空 / 过短（按**字符数**） | ✅ |
 | `test_register_success` | 拿到实体 + **round-trip `verify_password`** + hash ≠ 明文 + name/email 落库 | ✅ |
 | `test_register_same_email` | 第二次注册 → `Conflict` | ✅ |
 | `test_register_short_password` | 空串 + `"123"` → `BadRequest`(400) | ✅ |
 | `test_login_success` | 返回体字段一致 + token 的 `sub == user.id`（锁契约） | ✅ |
 | `test_login_failed` | 邮箱不存在 / 密码错 → **都是 `Unauthorized`** | ✅ |
-| `test_update` | 只传 name / name+message / 都不传 → `BadRequest` | ✅（① 断言偏弱） |
-| `test_update_password` | 旧密码错 → 401；新密码短 → 400；改完能登、旧密码登不上 | ✅（③ 钉死了校验顺序） |
-| `delete_me` 后按 id 查为 `None` | **未写**（误判"注销函数不存在"，见 4.8 末） | ⬜ 待补 |
+| `test_update` | 先置 message → 只改 name → message 不变；只改 message；都传；都不传 → `BadRequest`；末尾**重读库**验证落库 | ✅（① 已修 / ④ 已补） |
+| `test_update_password` | 旧密码错 → 401；**旧密码错 + 新密码短 → 401（顺序哨兵）**；旧密码对+新密码短 → 400；改完能登、旧密码登不上 | ✅（③ 已改旧密码先 + **哨兵已补**） |
+| `test_delete_me` | 注册 → 登录 → 注销 → **再登录 → `Unauthorized`** + `get_user → NotFound` + 重复注销 → `NotFound` | ✅（⑤ 已补全） |
 
 - 通用断言约束：`UserEntity` / `LoginResponse` **无 `Debug`** → 用 `matches!(res, Err(ApiError::X(_)))`，**不要 `unwrap_err()`**。
 - 三条 review 打磨项（断言强度 / 字节 vs 字符 / 校验顺序）详见 **4.8**。
+- ✅ **4.8 的 ①~⑤ 全部补齐**（21 条全绿）。唯一可挑的只剩命名：哨兵那两条复用了 `update_pwd_1` / `pwd_res1` 的名字（Rust 允许遮蔽，但读起来费劲）。
 
 ### 4.6 两个别做的事
 
@@ -400,41 +403,72 @@ base64url = 标准 base64 把 `+`→`-`、`/`→`_`、去掉尾部 `=`；`alg=no
 **遗留的方法论盲区（T1 要避免）**：写断言时问一句"**这个 bug 出现时，我会不会恰好也通过？**"
 T0 第一轮就踩过这个坑（`assert!(!validate_err.is_ok())` 换错密钥也通过）。
 
-### 4.8 T1 实施记录与三条 review 结论（2026-10-09）
+### 4.8 T1 实施记录与三条 review 结论（2026-10-09 记录，2026-10-10 更新）
 
-**产出**：`cargo test` → `20 passed; 0 failed`（5.90s）。构成 = jwt.rs 7 条 + auth.rs 内 T0 纯函数 5 条
-+ `test_valid_password` 1 条 + `#[sqlx::test]` 7 条。改动集中在 `src/auth.rs`（新增 `is_valid_password` + 测试模块）。**待 commit。**
+**产出**：`cargo test` → `21 passed; 0 failed`（6.26s）。构成 = jwt.rs 7 条 + auth.rs 内 T0 纯函数 5 条
++ `test_valid_password` 1 条 + `#[sqlx::test]` 8 条。改动集中在 `src/auth.rs`（新增 `is_valid_password` + 测试模块）。**待 commit。**
 
 **做对的**：`matches!` 全部用对（Conflict / BadRequest / Unauthorized）；`test_login_success` 验了 token 的 `sub`（锁契约而非实现）；
 `test_login_failed` 两个分支都覆盖（守住防邮箱枚举）；`test_register_success` 采纳了 round-trip `verify_password`
 （锁住"存进去能验回来"这个真契约，而非只 `assert_ne!` 明文）；密码策略用 `BadRequest`(400) 而非 `ApiError::Password`(500)——**对了**。
 
-#### ① `test_update` 的"只传 name → message 不变"是**弱断言**（要修）
+#### ① `test_update` 的"只传 name → message 不变"是**弱断言** → ✅ 2026-10-10 已修
 
-`assert_eq!(update_res1.message, user.message)` 的两边**一开始都是 `None`**——即使实现把 `message` 误清成 `NULL`，这条**照样通过**。
+原来 `assert_eq!(update_res1.message, user.message)` 的两边**一开始都是 `None`**——即使实现把 `message` 误清成 `NULL`，这条**照样通过**。
+**这正是 4.7④ 那句"这个 bug 出现时，我会不会恰好也通过？"的实战翻版。**
 
-**这正是 4.7④ 那句"这个 bug 出现时，我会不会恰好也通过？"的实战翻版。** 要真正锁住"不传就不动"，必须**先构造一个已有 `message` 的用户**（先 `update` 设一次），再只传 `name`，断言 `message` 仍是那个**旧值**。
+**修法（已做）**：加一段 `update_request_0`（只传 `message: Some("message_0")`）**先落一个值**，再发 `update_request_1`（只传 name），
+断言 `message` 仍是那个**字面量** `Some("message_0")`——不再是 `user.message` 这个"也等于 None"的参照。
 
-#### ② `is_valid_password` 用 `.len()` = **字节数**，不是**字符数**
+#### ② `is_valid_password` 的 `.len()` 是**字节数**，不是**字符数** → ✅ 2026-10-10 已改
 
-ASCII 下等价，但 **3 个汉字的密码 = 9 字节 ≥ 8 → 判"合法"，实际只有 3 个字符**。NIST SP 800-63B 的原文是 min 8 **characters**。
-改成 `chars().count()` 还是继续用字节长度，**都可以选**——但要知道自己选了哪个（与"长度下界是业务策略"一脉相承）。
+原来 3 个汉字的密码 = 9 字节 ≥ 8 → 判"合法"，实际只有 3 个字符。NIST SP 800-63B 原文是 min 8 **characters**。
+**已改为 `origin_password.chars().count() >= 8`**（`auth.rs:72`）。
 
-#### ③ `update_password_me` 把**新密码策略校验放在了旧密码校验之前**——测试已把这顺序钉死
+#### ③ `update_password_me` 的校验顺序 → ✅ 2026-10-10 已改为**旧密码先**，**顺序哨兵已补**
 
-`auth.rs:171` 先查 `is_valid_password(new)`，`:177` 才验 `old_password`。`test_update_password` 第 2 例
-（旧密码错 + 新密码短 → 期望 `BadRequest`）恰好**固化了这个顺序**：不先验旧凭据就报策略错。
+**决策（2026-10-10 定案）：先验旧密码（401 优先）。** 理由，从强到弱：
 
-两种顺序都说得通（fail-fast vs 先确认身份再谈别的），但**测试已经替你做了决定**——将来若想让"旧密码错 → 401 优先"，实现和测试**必须一起改**。
+- **与项目自身分层同构（最硬）**：`handler.rs` 里 `CurrentUser`（认证）**永远先于** `Json`（数据）——不通过认证就不解析 body。
+  旧密码 = 这次敏感操作的"再认证"，service 层理应一致。
+- **HTTP 语义不该颠倒**：401 = "未通过身份验证"，400 = "通过了但请求数据不合法"；先报 400 等于在未认证请求上评点数据。
+- **业界惯例**：Django `PasswordChangeForm` 显式声明 `field_order = ["old_password", "new_password1", "new_password2"]`（把旧密码硬排第一）；
+  Laravel 的 `current_password` 规则同理。
+- **错误指向正确方向**：policy-first 下"旧密码错 + 新密码短"报"新密码太短"，用户照着改完再提交才发现旧密码也错——白改一轮。
+- **诚实的边界**：这**不是安全漏洞**（规则公开 + 调用方已持合法 session，泄露 ≈ 0），是**一致性与响应语义**问题。
+- **反方（fail-fast）很弱**：省一次 argon2，但攻击者持合法 token 可发合规长度密码，成本照付；真要防 argon2 被刷，正确工具是限流。
 
-#### 附带：一条被跳过的断言（`delete_me`）
+**✅ 顺序哨兵已补（2026-10-10，`auth.rs:468-475`）**：新增一条 `old 错 + new 短 → Unauthorized` 的用例——
+这是**唯一能区分两种顺序**的组合（旧密码先 → 401；policy 先 → 400）。
+**从此把实现翻回 policy-first，这条会立刻亮红。**
 
-用户以为"注销函数不存在"——其实存在，只是**命名不对称**：auth 层叫 `delete_me`（`auth.rs:155`），
-sql 层叫 `delete_user`（`sql.rs:57`），在 `auth.rs` 里搜 `delete_user` 自然搜不到。
+> 中途的教训值得留档：改顺序时，原来的第 2 例（旧密码**错** + 新密码短 → 期望 `BadRequest`）被改成"旧密码**对** + 新密码短"，
+> **顺手就把唯一勉强锁住顺序的约束撤掉了**——而那两条 `old 错 + new 合法` / `old 对 + new 短` 在两种顺序下**结果完全相同**，
+> 谁也区分不了。**"断言在，顺序没在"**：没有一条用例能区分两种实现时，这个顺序等于没被保护。
 
-那条"注销后按 id 查为 `None`"的写法（两者择一）：
-- **sql 层看 `None`**：`sql::get_user_by_id(&pool, id).await` → `assert!(...is_none())`（`None` 只在 sql 层可见）
-- **auth 层看 `NotFound`**：`auth::get_user(&pool, id).await` → `matches!(..., Err(ApiError::NotFound(_)))`（auth 层已把 `None` 翻成 `NotFound`）
+#### ④ `test_update` 的断言全基于返回值、证明不了落库 → ✅ 2026-10-10 已补独立重读
+
+`update_me`（`auth.rs:124`）开头 `get_user` 读库 → 在内存里改 → `sql::update_user` 落库 → **直接 `Ok(user)` 返回内存对象**（没有再读一次库）。
+所以对返回值的断言证明的是"函数内的内存状态"，**不是"数据库真的写了"**。
+
+- 原状：`update_0` 的 message 落库**被间接验证**（`update_1` 调用**开头会重读库**）；但 `update_1` / `update_2` 自身的落库**无人验证**。
+- **✅ 已补**：`test_update` 末尾加了一次**独立重读**——
+```rust
+let persist = get_user(&pool, user.id).await.expect("期望重查成功");
+assert_eq!(persist.name, "name_update_2");
+assert_eq!(persist.message, Some("message_2".to_string()));
+```
+- **对照**：`test_update_password` **从没**这个问题——它靠"用新密码登录成功"验证落库，是端到端的真验证。
+
+#### ⑤ `delete_me` 的测试 → ✅ 2026-10-10 已补全（含文档原意那条）
+
+用户此前以为"注销函数不存在"——其实存在，只是**命名不对称**：auth 层 `delete_me`（`auth.rs:155`）× sql 层 `delete_user`（`sql.rs:57`），
+在 `auth.rs` 里搜 `delete_user` 自然搜不到。
+
+`test_delete_me` 现覆盖三件事：
+1. 注册 → 登录 → `delete_me` → **再登录 → `Unauthorized`**（能抓到"delete 是空操作"）
+2. **`get_user(&pool, user.id)` → `Err(NotFound)`** ← **这条才对上 §4.5 原本写的"持旧 token 查库兜底"**（token 仍解得出 id，但按 id 取不到 → 404）
+3. **重复注销 → `Err(NotFound)`** ← 覆盖 `delete_me` 的 `!res` 分支
 
 > 区分清楚：**登出 / token 失效**确实不存在（第七节的 refresh token / 黑名单），但这条指的是 `DELETE /me`（注销账号）。
 
@@ -560,8 +594,9 @@ V3  继续长
 - **写断言时问："这个 bug 出现时，我会不会恰好也通过？"** —— 断言强度比断言数量重要
 - **Rust 隐私规则是"定义模块及其后代可见"**：单元测试必须住在被测模块内（或其后代），crate 根放一个 `test.rs` 收集所有测试会看不到私有字段。别为了让测试通过而放宽生产代码的可见性
 - **`.len()` 数的是字节，不是字符**：非 ASCII（中文 / emoji）下会远大于"字符数"。做长度校验前先问"我数的是字节还是字符"
-- **测试会把"实现顺序"固化成"契约"**：校验的先后（如"先验密码策略还是先验旧凭据"）一旦被断言写死，改实现就必须同步改测试——要有意识地选择锁哪个顺序
+- **测试会把"实现顺序"固化成"契约"**：校验的先后（如"先验密码策略还是先验旧凭据"）一旦被断言写死，改实现就必须同步改测试——要有意识地选择锁哪个顺序；反过来，若**没有任何**用例能区分两种顺序，那这个顺序就等于**没被保护**（"断言在，顺序没在"）
 - **命名不对称是真实的排查成本**：`auth::delete_me` vs `sql::delete_user` 会让搜索落空，进而误判"函数不存在"。跨层同名操作尽量对齐词根
+- **函数返回内存对象时，断言返回值证明不了落库**：先读库 → 改内存 → 写库 → `Ok(内存对象)` 的模式下，"返回值正确"与"数据库真的写了"是两件事；要验证落库，必须在更新**之后重新读一次库**
 
 ---
 
@@ -570,11 +605,9 @@ V3  继续长
 1. **T0 ✅ 已完成并提交（2026-10-08 / commit `e54aff8`）**：`src/jwt.rs` 7 条 + `src/auth.rs` 5 条，`cargo test` → 12 passed。
 2. **✅ 遗留点 3 已修并提交（2026-10-09 / commit `0cee939`）**：`get_me` 逻辑下沉为通用的 `auth::get_user`；
    两个读端点共用之，`get_user_id` 改返 `PublicUserResponse`（视图分叉，见第二节末）。
-3. **T1 主体已完成（2026-10-09，未提交）**：`#[sqlx::test]` 7 条 + 纯函数 1 条，`cargo test` → **20 passed**。收尾三步：
-   - **a.** 补 `delete_me` 那条断言（写法见 **4.8** 末）
-   - **b.** 修 `test_update` 的弱断言（先构造带 `message` 的用户再只传 name，见 **4.8①**）
-   - **c.** `is_valid_password` 决定用 `.len()` 还是 `chars().count()`（**4.8②**）；确认 `update_password_me` 的校验顺序是否有意（**4.8③**）
-   - 全部完成 → **commit**（T1 基线要可回退，再做 admin）
+3. **T1 ✅ 完成（2026-10-10）**：`#[sqlx::test]` 8 条 + 纯函数 1 条，`cargo test` → **21 passed**。
+   4.8 的 ①~⑤ **全部补齐**（`chars().count()` / 先验旧密码 + **顺序哨兵** / `test_update` 强断言 / **落库重读** / `delete_me` 三条断言）。
+   **唯一待办：把这批改动 commit** —— T1 基线要可回退，再进 admin。顺手可把哨兵处重复的 `update_pwd_1` / `pwd_res1` 改成不同名字。
 4. **补跑第二节验收清单**：10-09 已跑通第 1-6 条（`login` 首次真正执行）；**第 7-9 条**（PATCH / PUT password / DELETE 的 HTTP 层）留到 T2 一起。
 5. **T2 前置**：加 `src/lib.rs`（模块转 `pub`，`main.rs` 变薄壳）；`Cargo.toml` 加
    `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`

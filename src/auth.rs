@@ -70,7 +70,7 @@ fn hash_password(origin_password: &str) -> Result<String, argon2::password_hash:
 }
 
 fn is_valid_password(origin_password: &str) -> bool {
-    origin_password.len() >= 8
+    origin_password.chars().count() >= 8
 }
 
 // services
@@ -168,14 +168,14 @@ pub async fn update_password_me(
     user_id: i64,
     user_update: UpdatePasswordRequest,
 ) -> Result<(), ApiError> {
-    if !is_valid_password(&user_update.new_password) {
-        return Err(ApiError::BadRequest("密码长度不能小于8".to_string()));
-    }
-
     let user = get_user(pool, user_id).await?;
 
     if !verify_password(&user_update.old_password, &user.password_hash) {
         return Err(ApiError::Unauthorized);
+    }
+
+    if !is_valid_password(&user_update.new_password) {
+        return Err(ApiError::BadRequest("密码长度不能小于8".to_string()));
     }
 
     let new_password_hash = hash_password(&user_update.new_password).map_err(ApiError::Password)?;
@@ -386,6 +386,20 @@ mod tests {
         };
         let user = register(&pool, &user_sign).await.expect("期望注册成功!");
 
+        let update_request_0 = UpdateUserRequest {
+            name: None,
+            message: Some("message_0".to_string()),
+        };
+
+        let update_res0 = update_me(&pool, user.id, update_request_0)
+            .await
+            .expect("期望更新成功");
+
+        assert_eq!(update_res0.id, user.id);
+        assert_eq!(update_res0.email, user.email);
+        assert_eq!(update_res0.message, Some("message_0".to_string()));
+        assert_eq!(update_res0.name, user.name);
+
         let update_request_1 = UpdateUserRequest {
             name: Some("name_update_1".to_string()),
             message: None,
@@ -397,7 +411,7 @@ mod tests {
 
         assert_eq!(update_res1.id, user.id);
         assert_eq!(update_res1.email, user.email);
-        assert_eq!(update_res1.message, user.message);
+        assert_eq!(update_res1.message, Some("message_0".to_string()));
         assert_eq!(update_res1.name, "name_update_1");
 
         let update_request_2 = UpdateUserRequest {
@@ -422,6 +436,14 @@ mod tests {
         let update_res3 = update_me(&pool, user.id, update_request_3).await;
 
         assert!(matches!(update_res3, Err(ApiError::BadRequest(_))));
+
+        let persist = get_user(&pool, user.id).await.expect("期望重查成功");
+
+        assert_eq!(persist.id, user.id);
+        assert_eq!(persist.email, user.email);
+        assert_eq!(persist.password_hash, user.password_hash);
+        assert_eq!(persist.name, "name_update_2");
+        assert_eq!(persist.message, Some("message_2".to_string()));
     }
 
     #[sqlx::test]
@@ -443,8 +465,17 @@ mod tests {
 
         assert!(matches!(pwd_res1, Err(ApiError::Unauthorized)));
 
-        let update_pwd2 = UpdatePasswordRequest {
+        let update_pwd_order = UpdatePasswordRequest {
             old_password: "123456ABCtmp123".to_string(),
+            new_password: "123".to_string(),
+        };
+
+        let pwd_res_order = update_password_me(&pool, user.id, update_pwd_order).await;
+
+        assert!(matches!(pwd_res_order, Err(ApiError::Unauthorized)));
+
+        let update_pwd2 = UpdatePasswordRequest {
+            old_password: "123456ABCtmp".to_string(),
             new_password: "123".to_string(),
         };
 
@@ -490,5 +521,51 @@ mod tests {
         let login_failed = login(&pool, access_ttl, &encoding_key, &user_login_failed).await;
 
         assert!(matches!(login_failed, Err(ApiError::Unauthorized)));
+    }
+
+    #[sqlx::test]
+    async fn test_delete_me(pool: SqlitePool) {
+        // register
+        let user_sign = UserRegister {
+            name: "name1".to_string(),
+            email: "test@test.email".to_string(),
+            password: "123456ABCtmp".to_string(),
+        };
+        let user = register(&pool, &user_sign).await.expect("期望注册成功!");
+
+        let user_login = UserLogin {
+            email: "test@test.email".to_string(),
+            password: "123456ABCtmp".to_string(),
+        };
+
+        let access_ttl = TimeDelta::try_seconds(10).unwrap();
+        let encoding_key = EncodingKey::from_secret(TMP_SECRET.as_bytes());
+        let decoding_key = DecodingKey::from_secret(TMP_SECRET.as_bytes());
+
+        let login_res = login(&pool, access_ttl, &encoding_key, &user_login)
+            .await
+            .expect("期望登录成功");
+
+        assert_eq!(user.id, login_res.user.id);
+        assert_eq!(user.name, login_res.user.name);
+        assert_eq!(user.email, login_res.user.email);
+
+        let token_id = jwt::validate(&login_res.token, &decoding_key).unwrap().sub;
+        assert_eq!(user.id, token_id);
+
+        let _ = delete_me(&pool, user.id).await.expect("期望注销成功");
+
+        let login_failed = login(&pool, access_ttl, &encoding_key, &user_login).await;
+
+        assert!(matches!(login_failed, Err(ApiError::Unauthorized)));
+        assert!(matches!(
+            get_user(&pool, user.id).await,
+            Err(ApiError::NotFound(_))
+        ));
+
+        assert!(matches!(
+            delete_me(&pool, user.id).await,
+            Err(ApiError::NotFound(_))
+        ));
     }
 }
