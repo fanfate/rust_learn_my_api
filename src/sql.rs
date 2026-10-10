@@ -1,10 +1,10 @@
-use crate::models::UserEntity;
+use crate::models::{Role, UserEntity};
 use sqlx::SqlitePool;
 
 pub async fn get_all_users(pool: &SqlitePool) -> Result<Vec<UserEntity>, sqlx::Error> {
     let users = sqlx::query_as!(
         UserEntity,
-        "SELECT id, name, email, password_hash, message FROM users"
+        "SELECT id, role as 'role: Role', name, email, password_hash, message FROM users"
     )
     .fetch_all(pool)
     .await?;
@@ -15,7 +15,7 @@ pub async fn get_all_users(pool: &SqlitePool) -> Result<Vec<UserEntity>, sqlx::E
 pub async fn get_user_by_id(pool: &SqlitePool, id: i64) -> Result<Option<UserEntity>, sqlx::Error> {
     let user = sqlx::query_as!(
         UserEntity,
-        "SELECT id, name, email, password_hash, message FROM users WHERE id = ?",
+        "SELECT id, role as 'role: Role', name, email, password_hash, message FROM users WHERE id = ?",
         id
     )
     .fetch_optional(pool)
@@ -29,7 +29,7 @@ pub async fn get_user_by_email(
 ) -> Result<Option<UserEntity>, sqlx::Error> {
     let user = sqlx::query_as!(
         UserEntity,
-        "SELECT id, name, email, password_hash, message FROM users WHERE email = ?",
+        "SELECT id, role as 'role: Role', name, email, password_hash, message FROM users WHERE email = ?",
         email
     )
     .fetch_optional(pool)

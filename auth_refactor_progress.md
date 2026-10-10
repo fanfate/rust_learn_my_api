@@ -27,7 +27,12 @@
     长度按 **`chars().count()`**（字符数）计，不再是 `.len()`（字节数）。
   - **4.8 的 ①~⑤ 全部已处理**：① `test_update` 强断言；② `.len()` → `chars().count()`；③ `update_password_me` 改为**先验旧密码（401 优先）**并补上**顺序哨兵**；
     ④ `test_update` 末尾加**独立重读**验证落库；⑤ `delete_me` 补 `get_user → NotFound` + 重复注销 → `NotFound`。
-  - 改动仍在工作树（`M src/auth.rs`），**待 commit**（这就是 T1 的可回退基线）。
+  - ✅ **已提交（2026-10-10 / commit `f201924 完成遗漏的测试`，其前 `f35288d`）**，工作树干净 —— T1 基线可回退。
+- **admin + role 的设计已定案（2026-10-10）**：**不做"两个注册端点"**。公开注册永远只产 `user`
+  （现状已正确：`UserRegister` 无 `role` 字段、`create_user` 的 INSERT 不带 role），admin 由
+  「**自举 seed（首个）+ `require_admin` 保护的提权端点（后续）**」产生。详见 **3.3**。
+- **role 的类型已定案（2026-10-10）**：DB/JSON 两端是字符串，Rust 内部用 **`enum Role { User, Admin }`**（不用 `String`）；
+  落地时 **`query_as!` 必须写列类型注解 `role as "role: Role"`**，否则报 `Role: From<String>`。详见 **3.3⑦⑧**。
 - **结论：核心目标已基本达成**——axum 核心概念已用掉大半，做完"T1 + admin/role"两项即可转场，不必按 plan.md 一路走到 Docker/CI。
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
@@ -186,7 +191,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 | 收尾项 | 为什么值得做 | 会练到 |
 |---|---|---|
 | **测试（T0/T1）**（先做） | 为接下来的 admin 改造提供安全网；逼出 `get_me` 的分层问题；兑现窄依赖红利 | `#[sqlx::test]`、真实库测试、断言行为而非实现 |
-| **admin + role**（后做） | 中间件 / `tower::Layer` 是唯一还没碰的 axum 核心概念 | `Router::nest` + `layer`、`403`、增量迁移、role 写进 Claims 的权衡 |
+| **admin + role**（后做） | 中间件 / `tower::Layer` 是唯一还没碰的 axum 核心概念（**设计决策见 3.3，2026-10-10 定案**） | `Router::nest` + `layer`、`403`、增量迁移、role 写进 Claims 的权衡 |
 | refresh token（可选） | 业务设计题而非语言题，但能练状态设计与迁移 | token 版本号 / 黑名单、token 轮换 |
 
 ### 3.2 建议降级或跳过
@@ -200,6 +205,147 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 | gRPC / 微服务 / 消息队列 | 同上，等有真实需求再说 |
 
 > 一句话：**补上测试 + 做完 admin/role，这个项目就够本了**；之后它作为"资产"保留，下一个项目会直接复用它。
+
+### 3.3 admin + role 的设计决策（2026-10-10 定案）
+
+**问题：admin 的注册要不要和普通用户分开？**
+
+**结论：不做"两个注册端点"。公开注册永远只产 `user`；admin 由「自举 + 提权」两条独立路径产生，两条都不是注册。**
+
+#### ① 现状已是正确形状，别动
+
+`UserRegister`（`auth.rs:16-21`）只有 `name / email / password`，**无 `role` 字段** → 保持。
+`sql::create_user`（`sql.rs:46`）的 INSERT 也不带 role → 新用户自动落 DB 默认值 `'user'`。
+**注册路径在字面上就无法表达一个角色**，这是最安全的形状。
+
+#### ② 为什么"两个注册端点"是错的方向
+
+若做 `POST /auth/register`（产 user）+ `POST /auth/admin/register`（产 admin），第二个端点存在本身就等于
+"有一条 HTTP 路径能产出管理员"，只有两种命运：
+
+- **公开** → 任何人调它自封 admin（灾难）
+- **受保护** → 那它就不是"注册"，是"管理员创建用户"，属下面的提权路径
+
+**词汇层面**："注册"天然含"匿名可调"，而 admin 的产生天生不该匿名可调。所以不是"注册分两套"，
+而是"**注册只有一套（永远产 user），admin 的产生根本不算注册**"。
+
+#### ③ 反例：注册端点接受 `role` 字段 = mass assignment 越权
+
+给 `UserRegister` 加 `role: String` 并透传给 INSERT，任何人 `POST {"role":"admin"}` 即自封管理员。
+"客户端能设置它不该设置的字段"这类漏洞统称 **mass assignment**（Rails 的 strong parameters、Django 的表单白名单都是为防它而生）。
+
+#### ④ 行业惯例：没有一家提供"公开注册成管理员"
+
+| 系统 | 首个 admin | 后续 admin |
+|---|---|---|
+| Django | `createsuperuser` 命令 | 后台 / shell 改 `is_staff` |
+| Laravel | seeder | tinker / 后台 |
+| GitHub | 组织创建者 | owner 邀请 / 提权 |
+| Supabase | Dashboard / `service_role` key | Dashboard |
+| Rails + Devise | seed / 手动 | 手动改 flag |
+
+共同形状 = **自举 bootstrap（绕开公开 HTTP）+ 提权 promotion（受保护端点）**。
+
+#### ⑤ 落到本项目：三条路，选最小
+
+| 路径 | 内容 | 判断 |
+|---|---|---|
+| **A 自举首个 admin** | seed 脚本 `INSERT ... role='admin'`，手动跑一次（`sqlite3 data/users.db < seeds/00_admin.sql`） | **必做** —— 清楚表达"bootstrap 是运维动作，不是 API" |
+| **B 提权** | `PATCH /admin/users/{id}/role` + `require_admin` 中间件 | **可选但值得** —— admin 里程碑里唯一能用上中间件的**写**路径，比只做 `GET /admin/users` 更能练到 `Layer` |
+| **C `POST /admin/users`**（admin 代建账号） | admin 创建用户 | **跳过** —— 价值与 B 重叠，还会引入"初始密码怎么给"等额外问题，超出收手标准 |
+
+> env 驱动启动自举（`ADMIN_EMAIL` 存在且无 admin 则创建）更"生产"，但对学习项目过度设计 —— 用 seed 文件即可。
+
+#### ⑥ ⚠️ 必须提前知道的坑：role 放进 Claims 之后
+
+计划让 `JwtClaims` 带 `role`（省一次查库），代价必须知道：
+
+- **提权不即时生效**：X 被提权为 admin，他手里旧 token 的 claims 仍是 `role="user"`，**需重新登录**才拿到新角色。
+- **降权更危险**：被降权者的旧 token **仍然能当 admin 用**，直到 token 过期
+  （受 `access_ttl` 限制；叠加 4.7② 的 `leeway=60`，实际窗口比 ttl 更长）。
+- **严格做法** = `require_admin` 里拿 `claims.sub` **回库查一次 role** —— 那就等于放弃了"免查库"这个收益。
+- 这就是此前已记过的那条权衡（免查库 vs 角色变更不即时生效）。**学习阶段接受它没问题，但要明确自己接受了什么。**
+
+**决定：按 A + B 实施；role 写进 Claims（接受"不即时生效"）；`require_admin` 用中间件（`Router::nest("/admin") + layer`）。**
+
+#### ⑦ role 用什么类型：边界是字符串，内部是 enum
+
+**三层分工 —— DB 与 JSON 是"边界"（字符串是它们的母语），Rust 内部保持类型安全。**
+
+| 层 | 类型 | 说明 |
+|---|---|---|
+| DB 列 | `TEXT` | SQLite 没有原生 enum 类型，只能存字符串（或整数） |
+| Rust（entity / claims / service） | `enum Role { User, Admin }` | 编译期穷尽匹配，非法状态不可表示 |
+| JSON / JWT | `"user"` / `"admin"` | 由 serde `rename_all` 生成 |
+
+`Role` 的落地形状（`models.rs`）：
+
+```rust
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(rename_all = "lowercase")]   // DB  TEXT
+#[serde(rename_all = "lowercase")]  // JSON / JWT
+pub enum Role { User, Admin }
+```
+
+- **两个 `rename_all` 必须一致**：只写一个会让 DB 存 `"user"`、JWT 里却是 `"User"` —— 同一概念在两个边界长得不同。
+- **`#[derive(sqlx::Type)]` 不用改 `Cargo.toml`**：`sqlx` 的 `macros` feature 定义里已含 `derive`（`macros = ["derive", ...]`），项目已开 `macros`。
+- **强枚举 → TEXT，弱枚举 → INTEGER**：无 `#[repr]` 的强枚举，`type_info()` 是 `<str>::type_info()` = TEXT
+  （`sqlx-macros-core-0.9.0/src/derives/type.rs:224-233`）；加 `#[repr(i32)]` 则编码为整数。**选强枚举**：SQL 里可读、可手查。
+- **未知值 fail-closed**：decode 是严格 match，未匹配 → `Err("invalid value .. for enum ..")`（`derives/decode.rs:176`）。
+  DB 里被手改成非法值 → **读取直接报错**，不会静默当普通用户。代价：加新角色时旧服务读新值会炸 → **先升代码、再写数据**。
+- **为什么不选 `String`**：拼写错编译器不查（`"admni"` 照样编译）；`match` 必须写 `_ =>` default（新角色静默落 default）；
+  大小写/空白不一致静默失效。enum 把这三类错误全部变成编译错误。
+- **何时该改用 String / 表**：角色集合**运行时可变**（自定义 RBAC）→ 走 `roles` 表 + String；固定 `user/admin` → enum。
+  DB 列本来就是 TEXT，将来切换**不需要迁移数据**，只换 Rust 侧类型。
+
+#### ⑧ ⚠️ 落地坑：`query_as!` 遇自定义类型必须写**列类型注解**
+
+给 `UserEntity` 加 `role: Role` 后，`cargo check` 报：
+
+```
+error[E0277]: the trait bound `Role: From<std::string::String>` is not satisfied
+```
+
+**根因**：`query_as!` 宏**看不到目标类型的字段定义**（宏里只给了 `UserEntity` 这个**名字**，Rust 类型信息在宏展开时不可见），
+所以它只能从 **SQL 列的声明类型**推断出一个 Rust 类型，再用 `.into()` 桥接到结构体字段
+（`sqlx-macros-core-0.9.0/src/query/output.rs:153-160`）：
+
+```rust
+// 宏生成的代码（简化）：role 列被推断为 String，再 .into() 到 Role
+let v = row.try_get_unchecked::<String, _>(i)?.into();
+```
+
+而 SQLite 把 TEXT 映射为 `String`（`sqlx-sqlite-0.9.0/src/type_checking.rs:8-24` 的 `impl_type_checking!(Sqlite { .., String, .. })`），
+于是编译器要求 `String: Into<Role>`，即 **`Role: From<String>`** —— 这是 `query_as!` 宏对 SQLite 自定义类型的**固有限制**，不是你写错。
+
+**解法 1（推荐）：给该列写类型注解**
+
+```rust
+sqlx::query_as!(
+    UserEntity,
+    r#"SELECT id, role as "role: Role", name, email, password_hash, message FROM users"#
+)
+```
+
+宏改用 `try_get_unchecked::<Role>(i)` → 调你 derive 出来的 `Role::decode`（**fail-closed 保住**），
+并**保留 `query_as!` 的编译期检查**（列名/类型错在编译期就炸）。代价：每处 SELECT 都要写注解。
+
+**解法 2：改用 `FromRow` + `query_as` 函数**
+
+```rust
+#[derive(Clone, sqlx::FromRow)]
+pub struct UserEntity { /* 字段同前，多一个 role: Role */ }
+
+sqlx::query_as::<_, UserEntity>("SELECT id, role, name, email, password_hash, message FROM users")
+```
+
+走 `row.try_get::<Role>(i)`（`derives/row.rs:100-108` 的 `(false, None, None)` 分支），同样 fail-closed、SQL 干净；
+**但失去编译期检查**（列名写错要运行时才发现）。
+
+**❌ 不要做**：给 `Role` 实现 `From<String>` —— `From` 不能失败，遇到未知值只能 `panic!`（崩服务）或静默降级成 `User`（**破坏 fail-closed**）。
+
+> 实测（2026-10-10）：临时 crate 指向本项目库副本 —— 无注解精确复现 `Role: From<String>`；上述两条解法均编译通过。
+> 顺带：`get_user_by_id` / `get_user_by_email` 的 SELECT **原本漏了 `role` 列**，会报 `missing field role`（E0063），加注解前先补列。
 
 ---
 
@@ -597,6 +743,12 @@ V3  继续长
 - **测试会把"实现顺序"固化成"契约"**：校验的先后（如"先验密码策略还是先验旧凭据"）一旦被断言写死，改实现就必须同步改测试——要有意识地选择锁哪个顺序；反过来，若**没有任何**用例能区分两种顺序，那这个顺序就等于**没被保护**（"断言在，顺序没在"）
 - **命名不对称是真实的排查成本**：`auth::delete_me` vs `sql::delete_user` 会让搜索落空，进而误判"函数不存在"。跨层同名操作尽量对齐词根
 - **函数返回内存对象时，断言返回值证明不了落库**：先读库 → 改内存 → 写库 → `Ok(内存对象)` 的模式下，"返回值正确"与"数据库真的写了"是两件事；要验证落库，必须在更新**之后重新读一次库**
+- **公开注册端点永远不接受 `role` 之类的授权字段**（mass assignment 越权）。管理员由「自举（绕开公开 HTTP）+ 提权（受保护端点）」产生 —— **"admin 注册"不该是一个端点**；"注册"一词天然含"匿名可调"，而特权产生天生不该匿名可调
+- **授权信息塞进凭据会引入不一致窗口**：JWT 带 `role` 后，**提权**要重登才生效（旧 token 仍是旧角色），**降权**则旧 token 仍可用直到过期 —— "免查库"的收益正是冒这个窗口的风险换来的
+- **`query_as!` 宏看不到目标类型的字段定义**：它只能从 SQL 列的声明类型推断 Rust 类型、再用 `.into()` 桥接到结构体字段。SQLite 把 TEXT 推断为 `String`，
+  所以自定义类型（enum / newtype）**必须写列类型注解** `col as "col: Type"`，否则报 `X: From<String>`。所谓"绕过"（给类型实现 `From<String>`）会牺牲 fail-closed，别用
+- **"有限、封闭、语义明确的集合"用 enum，别用 `String`**（角色、状态、来源…）：DB/JSON 是**边界**（字符串是它们的母语），程序**内部**保持类型安全。
+  `String` 会把"拼写错 / 非穷尽 match / 大小写不一致"三类错误全部推迟到运行时，而且往往是**静默**的
 
 ---
 
@@ -605,13 +757,19 @@ V3  继续长
 1. **T0 ✅ 已完成并提交（2026-10-08 / commit `e54aff8`）**：`src/jwt.rs` 7 条 + `src/auth.rs` 5 条，`cargo test` → 12 passed。
 2. **✅ 遗留点 3 已修并提交（2026-10-09 / commit `0cee939`）**：`get_me` 逻辑下沉为通用的 `auth::get_user`；
    两个读端点共用之，`get_user_id` 改返 `PublicUserResponse`（视图分叉，见第二节末）。
-3. **T1 ✅ 完成（2026-10-10）**：`#[sqlx::test]` 8 条 + 纯函数 1 条，`cargo test` → **21 passed**。
+3. **T1 ✅ 完成并提交（2026-10-10 / commit `f201924`）**：`#[sqlx::test]` 8 条 + 纯函数 1 条，`cargo test` → **21 passed**。
    4.8 的 ①~⑤ **全部补齐**（`chars().count()` / 先验旧密码 + **顺序哨兵** / `test_update` 强断言 / **落库重读** / `delete_me` 三条断言）。
-   **唯一待办：把这批改动 commit** —— T1 基线要可回退，再进 admin。顺手可把哨兵处重复的 `update_pwd_1` / `pwd_res1` 改成不同名字。
+   工作树已干净。顺手可把哨兵处重复的 `update_pwd_1` / `pwd_res1` 改成不同名字（非必须）。
 4. **补跑第二节验收清单**：10-09 已跑通第 1-6 条（`login` 首次真正执行）；**第 7-9 条**（PATCH / PUT password / DELETE 的 HTTP 层）留到 T2 一起。
 5. **T2 前置**：加 `src/lib.rs`（模块转 `pub`，`main.rs` 变薄壳）；`Cargo.toml` 加
    `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`
-6. **admin + role**：迁移加 `role TEXT NOT NULL DEFAULT 'user'` → Claims 加 `role`（权衡：免查库 vs 角色变更不即时生效）
-   → `Router::nest("/admin", ...)` + `require_admin` 中间件 → `403` 登场，`get_all_users` 复活（带分页）
+6. **admin + role**（设计已定案，见 **3.3**）：
+   - **a.** 迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))`（`UserEntity` 同步加 `role: Role`；
+     `sql.rs` 的**三处** SELECT 列清单要跟着改，并按 **3.3⑧** 写类型注解 `role as "role: Role"`，否则报 `Role: From<String>`）
+   - **b.** **自举首个 admin**：`seeds/00_admin.sql`（`INSERT ... role='admin'`），手动执行一次。
+     ⚠️ **注册端点不动，永远产 user**（`UserRegister` 不加 `role` 字段）
+   - **c.** Claims 加 `role`（接受"角色变更不即时生效"，见 3.3⑥）→ `Router::nest("/admin", ...)` + `require_admin` 中间件 → `403` 登场
+   - **d.** 提权端点 `PATCH /admin/users/{id}/role`（可选但推荐：中间件唯一能用上的**写**路径）
+   - **e.** `get_all_users` 复活（带分页）；据此决定 `UserResponse` 是否加 `role`
 7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径
 8. `git commit` 收尾 → 开新仓库做 Agent 的 V0
