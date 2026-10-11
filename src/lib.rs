@@ -3,6 +3,8 @@ use axum::{
     routing::{get, post, put},
 };
 
+use crate::state::AppState;
+
 pub mod auth;
 pub mod config;
 pub mod db;
@@ -28,5 +30,16 @@ pub fn app(state: state::AppState) -> Router {
                 .delete(handler::delete_me),
         )
         .route("/me/password", put(handler::update_password_me))
+        .nest("/admin", admin(state.clone()))
         .with_state(state)
+}
+
+fn admin(state: state::AppState) -> Router<AppState> {
+    Router::new()
+        .route("/ping", get(|| async { "ping admin!" }))
+        .route("/users", get(handler::get_all_users))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            middleware::require_admin,
+        ))
 }

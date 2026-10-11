@@ -45,7 +45,7 @@ pub async fn delete_me(
     current: CurrentUser,
     State(state): State<AppState>,
 ) -> Result<ApiResponse<()>, ApiError> {
-    let _res = auth::delete_me(&state.pool, current.id).await?;
+    auth::delete_me(&state.pool, current.id).await?;
     Ok(ApiResponse::success_empty())
 }
 
@@ -54,7 +54,7 @@ pub async fn update_password_me(
     State(state): State<AppState>,
     Json(payload): Json<UpdatePasswordRequest>,
 ) -> Result<ApiResponse<()>, ApiError> {
-    let _res = auth::update_password_me(&state.pool, current.id, payload).await?;
+    auth::update_password_me(&state.pool, current.id, payload).await?;
     Ok(ApiResponse::success_empty())
 }
 
@@ -75,4 +75,15 @@ pub async fn login_user(
     let response =
         auth::login(&state.pool, state.access_ttl, &state.encoding_key, &payload).await?;
     Ok(ApiResponse::success(response))
+}
+
+// admin
+
+pub async fn get_all_users(
+    State(state): State<AppState>,
+) -> Result<ApiResponse<Vec<UserResponse>>, ApiError> {
+    let users = auth::get_all_users(&state.pool).await?;
+    Ok(ApiResponse::success(
+        users.into_iter().map(UserResponse::from).collect(),
+    ))
 }

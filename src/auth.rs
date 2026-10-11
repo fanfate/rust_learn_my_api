@@ -8,7 +8,7 @@ use sqlx::SqlitePool;
 use crate::{
     error::ApiError,
     jwt,
-    models::{LoginResponse, UpdatePasswordRequest, UpdateUserRequest, UserEntity},
+    models::{LoginResponse, Role, UpdatePasswordRequest, UpdateUserRequest, UserEntity},
     sql,
     state::AppState,
 };
@@ -26,9 +26,10 @@ pub struct UserLogin {
     password: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CurrentUser {
     pub id: i64,
+    pub role: Role,
 }
 
 impl FromRequestParts<AppState> for CurrentUser {
@@ -47,7 +48,10 @@ impl FromRequestParts<AppState> for CurrentUser {
         let claims =
             jwt::validate(tokens, &state.decoding_key).map_err(|_| ApiError::Unauthorized)?;
 
-        Ok(CurrentUser { id: claims.sub })
+        Ok(CurrentUser {
+            id: claims.sub,
+            role: claims.role.clone(),
+        })
     }
 }
 
@@ -197,6 +201,10 @@ pub async fn get_user(pool: &SqlitePool, user_id: i64) -> Result<UserEntity, Api
         .map_err(ApiError::Sql)?
         .ok_or(ApiError::NotFound("用户不存在".to_string()))?;
     Ok(user)
+}
+
+pub async fn get_all_users(pool: &SqlitePool) -> Result<Vec<UserEntity>, ApiError> {
+    sql::get_all_users(pool).await.map_err(ApiError::Sql)
 }
 
 #[cfg(test)]
@@ -488,7 +496,7 @@ mod tests {
             new_password: "123456ABCtmpABC".to_string(),
         };
 
-        let _ = update_password_me(&pool, user.id, update_pwd3)
+        update_password_me(&pool, user.id, update_pwd3)
             .await
             .expect("期望修改密码成功");
 
@@ -553,7 +561,7 @@ mod tests {
         let token_id = jwt::validate(&login_res.token, &decoding_key).unwrap().sub;
         assert_eq!(user.id, token_id);
 
-        let _ = delete_me(&pool, user.id).await.expect("期望注销成功");
+        delete_me(&pool, user.id).await.expect("期望注销成功");
 
         let login_failed = login(&pool, access_ttl, &encoding_key, &user_login).await;
 

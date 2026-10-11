@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 pub async fn get_all_users(pool: &SqlitePool) -> Result<Vec<UserEntity>, sqlx::Error> {
     let users = sqlx::query_as!(
         UserEntity,
-        "SELECT id, role as 'role: Role', name, email, password_hash, message FROM users"
+        "SELECT id, role as 'role: Role', name, email, password_hash, message FROM users ORDER BY id"
     )
     .fetch_all(pool)
     .await?;

@@ -25,6 +25,9 @@ pub enum ApiError {
 
     #[error("冲突：{0}")]
     Conflict(String),
+
+    #[error("禁止访问")]
+    Forbidden,
 }
 
 impl IntoResponse for ApiError {
@@ -37,6 +40,7 @@ impl IntoResponse for ApiError {
             ApiError::Sql(_) => (StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库错误"),
             ApiError::Password(_) => (StatusCode::INTERNAL_SERVER_ERROR, 500, "加密出错"),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, 409, msg.as_str()),
+            ApiError::Forbidden => (StatusCode::FORBIDDEN, 403, "禁止访问"),
         };
 
         ApiResponse::<()>::error(status_code, code, message).into_response()
