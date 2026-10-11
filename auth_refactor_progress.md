@@ -6,7 +6,7 @@
 
 ---
 
-## 〇、当前状态速览（2026-10-10）
+## 〇、当前状态速览（2026-10-11 更新）
 
 - 鉴权改造已于 09-30 完成并通过 review，已提交：
   - `d90abc2 基本完成鉴权部分的改造`
@@ -39,10 +39,16 @@
 - **role 落地已基本完成（2026-10-10，未提交）**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK(...)`；`Role` enum（3.3⑦）；
   `UserEntity` / `UserResponse` / `PublicUserResponse` 加 `role`；**三处** SELECT 加 `role as "role: Role"`（3.3⑧）；
   **`JwtClaims` 已加 `pub role: Role`**（`sign` / `new` 签名随之改，`login` 传 `&user.role`）。详见 **3.3⑥**。
-- **admin 里程碑进行中（2026-10-10）**：`src/middleware.rs` 已建（当前仅占位函数）→ 下一步写 `require_admin` 中间件
-  → `Router::nest("/admin") + layer` → `403` 登场。
-  工作树：`M src/jwt.rs`、`M src/auth.rs`、`M src/lib.rs`、`?? src/middleware.rs`（**均未 commit**）。
-- **结论：核心目标已基本达成**——axum 核心概念已用掉大半，**只剩 admin/role（中间件 / `Layer` 是唯一没碰的核心概念）**，做完即可转场，不必按 plan.md 一路走到 Docker/CI。
+- **admin 里程碑主体已完成并提交（2026-10-11 / commit `6626125 增加admin层和中间件`）**：
+  `require_admin`（`middleware.rs`，用 **`match user.role` 穷尽匹配**而非 `if != Admin`）+ `Router::nest("/admin")`
+  + `route_layer(from_fn_with_state(...))` + `ApiError::Forbidden`(403)；`get_all_users` 复活接到 `GET /admin/users`
+  （**遗留点 4 正式收尾**，`sql.rs` 顺手补上了 `ORDER BY id` —— 注意它当时被加到了 `get_user_by_id`（主键单行，纯 no-op），已挪回 `get_all_users`）。
+  `cargo test` → **21 绿 / 零回归**（2026-10-11 实测）。
+- **⚠️ 但这条链尚未真正跑通过**：`data/users.db` 是 **0 用户** → 连一个 token 都拿不到 →
+  `401 / 403 / 200` 三态、以及「提权后必须重新登录」（**3.3⑥** 那条权衡）都还停在"代码看起来对"的层面。
+  **这是当前唯一的实质缺口**，清单见 **九·6f**。
+- **结论：核心目标已达成**——axum 核心概念（提取器 / 路由 / 中间件 / `Layer` / 状态 / 错误映射）已各用一遍。
+  剩余项（seeds 自举、提权端点、T2、分页、**中间件生态**）已于 2026-10-11 **定案为"暂缓"**，理由与触发条件见 **3.4**。
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
 ---
@@ -209,6 +215,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 |---|---|
 | CORS | 一个 `CorsLayer` 的事，真接前端时顺手加，不值得单独立项 |
 | tracing | 学的是工程化不是 Rust，下个项目（Agent）里自然会用到 |
+| **中间件生态**（`tower-http` 全家桶、`tower-governor` 限流、`TimeoutLayer` 等） | **暂缓（2026-10-11 定案，见 3.4）**：机制已摸清 —— axum 没有自有中间件体系，**全部复用 `tower::Layer`**，`require_admin` 与 `CorsLayer` 是同一层抽象。缺的只是"用别人写好的 crate"的熟练度，那是**查文档的活，不是理解力的活** |
 | 阶段 10 目录化分层（routes/services/repositories） | 纯体力活，思想已在 auth.rs / sql.rs 用上，收益低于成本 |
 | Docker / CI / 部署 / HTTPS | 运维知识，与 Rust 无关，**学习期性价比最低——plan.md 后半段这些直接跳** |
 | gRPC / 微服务 / 消息队列 | 同上，等有真实需求再说 |
@@ -365,6 +372,48 @@ sqlx::query_as::<_, UserEntity>("SELECT id, role, name, email, password_hash, me
 
 > 实测（2026-10-10）：临时 crate 指向本项目库副本 —— 无注解精确复现 `Role: From<String>`；上述两条解法均编译通过。
 > 顺带：`get_user_by_id` / `get_user_by_email` 的 SELECT **原本漏了 `role` 列**，会报 `missing field role`（E0063），加注解前先补列。
+
+---
+
+### 3.4 学习阶段收手决定（2026-10-11 定案）
+
+**决定：本项目的功能面就此冻结，转入"熟悉代码"（回读 + 实跑）；不再新增功能。中间件生态（tower-http / 限流 / CORS / tracing）列为暂缓，等有实际需要再说。**
+
+理由：
+
+1. **学 Rust 的收益已经拿满**。这个项目的使命（**3.1**）是"把 axum 核心概念各用一遍 + 用 Rust 写一遍类型/所有权密集的代码"，
+   而不是"做一个生产级后端"。核心概念（提取器 / 路由 / 中间件 / `Layer` / 状态 / 错误映射）已全部落地。
+2. **再往下是"生态熟练度"，不是"理解力"**。`axum` 无自有中间件体系，一切中间件都是 `tower::Layer`（**第八节末**）；
+   会用 `CorsLayer` / `TraceLayer` / `RequestBodyLimitLayer` 只需查一次文档，**换任何一门语言的 Web 框架都是同一件事**。
+   这部分收益与"Rust 学习"几乎无关。
+3. **与主流脱节的顾虑成立，但只对"技能投资"成立，不对"理解力投资"成立**。Web 后端主流确实不是 Rust；
+   但如果目标是"真要做 Web 后端"，那该练的也不是中间件（那是查文档的活），而是**分层 / 依赖方向 / 错误设计 / 测试策略** —— 这些本项目已经练到了，
+   而且是跨语言迁移的。
+4. **收手标准是自洽的**（**3.1 / 八节末**）："当新概念覆盖率和知识密度开始下降时就该换项目"。现在加的每一个中间件，都是第 2 条说的"查文档的活"。
+
+**留档：这套机制将来真要用时，不必重新调研。**
+
+| 概念 | 结论（已核实，非记忆） |
+|---|---|
+| axum 的中间件体系 | **不存在自有体系**，官方原文："axum is unique in that it doesn't have its own bespoke middleware system and instead integrates with tower"（`axum-0.8.9/src/docs/middleware.md`） |
+| 自写中间件 | `from_fn`（`S = ()`）/ `from_fn_with_state`（`S = AppState`）→ 本项目 `require_admin` 用的就是这个 |
+| 现成中间件 | `tower-http`（trace / cors / compression / timeout / limit(体大小) / request_id / catch_panic / auth / metrics…）、`tower-governor`（按 IP 的拒绝式限流，返回 429，slowapi 的对位） |
+| ⚠️ 同名陷阱 | `tower::limit::RateLimitLayer` / `ConcurrencyLimitLayer` 是**挂起排队**（backpressure），**axum 官方明确不建议**挂在路由上；要"拒绝式限流"用 `tower-governor` |
+| ⚠️ 组合顺序 | `Router::layer` 连续调用 = **后加的在外层**；`ServiceBuilder` = 先加的在外层。方向相反，混用极易搞反 |
+| ⚠️ 第三方 layer 的 `BoxError` | `TimeoutLayer` 之类要包一层 `HandleErrorLayer`，否则编译不过 |
+| ⚠️ 依赖现状 | `tower` 目前**只在 `[dev-dependencies]` 且仅开 `util`**；要在生产代码用 `ServiceBuilder` / `TimeoutLayer`，需挪进 `[dependencies]` 并开对应 feature |
+
+**暂缓项的重新触发条件**（满足任一条再回来做）：
+
+| 暂缓项 | 触发条件 |
+|---|---|
+| 中间件生态（体大小限制 / trace / CORS / 限流） | 服务真的对外、或有前端要接、或开始担心被打 |
+| `seeds/00_admin.sql`（3.3⑤ A） | **不算暂缓** —— 见九·6f：不写它，admin 链就没有可执行的起点（也可临时用 `sqlite3 UPDATE` 代替，二者等价） |
+| `PATCH /admin/users/{id}/role`（3.3⑤ B） | 想再练一次"用中间件的**写**路径"时 |
+| 分页 / `QueryBuilder` 动态 SQL | 有真实数据量时 |
+| refresh token / 黑名单 | 真需要"注销即时生效"时 |
+
+> 一句话：**这个项目作为"资产"冻结在这里**，不再为它加功能；有实际需要（或换个方向做 Agent）时，它会被直接复用而不是被续写。
 
 ---
 
@@ -778,6 +827,24 @@ V3  继续长
 - **转成 lib target 后，`dead_code` 对 `pub` 项失效**：`pub fn` / `pub` 字段算作"公开 API"，编译器不再报 "never used"。
   于是那条 `get_all_users` 未使用告警会**凭空消失** —— **不是因为它被用上了**。别拿 warning 的消失当作"接线完成"的证据；
   反过来说，改成 lib 之后，**"写了但忘了用"这类错误再也收不到编译器提醒了**
+- **axum 没有自己的中间件体系 —— 它直接复用 `tower`**：官方原文"axum is unique in that it doesn't have its own bespoke middleware system
+  and instead integrates with **tower**"。所以"axum 中间件生态" = `tower` + `tower-http` 的生态，
+  自己用 `from_fn_with_state` 写的 `require_admin` 与现成的 `CorsLayer` / `TraceLayer` 是**同一层抽象、同一种挂载方式**。
+  判断"自己写还是用现成的"也很简单：**业务逻辑（谁能访问）自己写；通用横切关注点（CORS / 压缩 / 追踪 / 超时 / 限流）用现成的**
+- **`route_layer` 与 `layer` 的区别**：`layer` 同时包住 `path_router + fallback_router`；`route_layer` **只包 `path_router`**（只有请求**匹配到路由**才跑）。
+  授权类中间件必须用 `route_layer` —— 官方原文：useful for middleware that return early (such as **authorization**) which might otherwise
+  convert a **405 Method Not Allowed** into a 401。两个直接推论：① `/admin` 下**至少要有一条真实路由**，否则 `route_layer` 无事可做、403 无处观测；
+  ② `route_layer` **必须写在 `.route()` 之后** —— 写在前面源码里**直接 panic**（"Adding a route_layer before any routes is a no-op"）
+- **`from_fn` 的 `S` 恒为 `()`，且中间件不继承 `.with_state()`**：`from_fn(f)` 下提取器拿到 `S = ()`，而 `CurrentUser` 实现的是
+  `FromRequestParts<AppState>` → 编译期就不匹配。要 state 只能 `from_fn_with_state(state.clone(), f)`。
+  这里的两份 `state` **不是重复**：`.with_state(state)` 喂 **handler** 的 `State<AppState>`，
+  `from_fn_with_state(state.clone(), …)` 喂**中间件提取器**的 `S`，谁都不能省。
+  **参数表里看不见 `AppState`，不代表它不需要**——它是从 layer 喂进去的。（`AppState` 内是 `SqlitePool`（Arc）→ clone 是浅拷贝，可忽略）
+- **中间件提取出的 `CurrentUser` 不会传给后面的 handler**：`from_request_parts` 只把值交给这个中间件函数，不写回 `req`。
+  想让 handler 复用它得手动 `req.extensions_mut().insert(user)`；本项目不做，各写各的更清晰 —— handler 自己写 `CurrentUser`（各验一次签，开销可忽略）。
+  分工因此更干净：**认证（你是谁）与授权（你能不能）各落一处**
+- **判角色用 `match` 而不是 `if x != A`**：`match` 在**新增枚举变体时编译报错**，逼你显式决定放行还是拒绝；`if != A` 会静默落进某分支。
+  又一次"让编译器替我列待办"
 
 ---
 
@@ -794,15 +861,80 @@ V3  继续长
    `main.rs` 变薄壳（**零 `mod` 声明**，改用 `use my_api::...`）；`cargo test` 仍 21 绿。
    - ⚠️ 坑：`main.rs` 若保留 `mod` 声明 → **crate 双编译 + 两份同名类型互不相等**（详见 **4.3** / 第八节）。
    - ⏳ **剩余**：`Cargo.toml` 加 `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`（**T2 才用**，现在不加无妨；读 body 用 `axum::body::to_bytes`，无需额外依赖）。
-6. **admin + role**（设计已定案，见 **3.3**）—— 🔄 **进行中（2026-10-10）**：
+6. **admin + role**（设计已定案，见 **3.3**）—— ✅ **主体已完成（2026-10-11 / commit `6626125`）**，余项按 **3.4** 定案暂缓：
    - **a. ✅ 已完成**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))`；`Role` enum（3.3⑦）；`UserEntity` / `UserResponse` /
      `PublicUserResponse` 加 `role`；**三处** SELECT 加类型注解 `role as "role: Role"`（3.3⑧）。
-   - **b. ⬜ 自举首个 admin**：`seeds/00_admin.sql`（`INSERT ... role='admin'`），手动执行一次。
-     ⚠️ **注册端点不动，永远产 user**（`UserRegister` 不加 `role` 字段）
-   - **c. 🔄 一半**：**Claims 加 `role` ✅ 已完成**（`jwt.rs`：`pub role: Role`；`sign` / `new` 签名随之改、`login` 传 `&user.role`）；
-     **待做**：`Router::nest("/admin", ...)` + `require_admin` 中间件（`src/middleware.rs` 已建，当前仅占位函数）→ `403` 登场。
-     接受"角色变更不即时生效"，见 **3.3⑥**
-   - **d. ⬜** 提权端点 `PATCH /admin/users/{id}/role`（可选但推荐：中间件唯一能用上的**写**路径）
-   - **e. ⬜** `get_all_users` 复活（带分页）；据此决定 `UserResponse` 是否加 `role`
-7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径（前置 lib.rs ✅ 已就位）
+   - **b. ⬜ `seeds/00_admin.sql` 自举首个 admin** —— **仍建议做（成本 = 4 行 SQL）**：不写它，admin 链就没有可执行的起点
+     （也可临时用 `sqlite3 UPDATE` 代替，见 **6f** 前置）。⚠️ **注册端点不动，永远产 user**（`UserRegister` 不加 `role` 字段）
+   - **c. ✅ 已完成**：**Claims 加 `role`**（`jwt.rs`：`pub role: Role`；`sign` / `new` 签名随之改、`login` 传 `&user.role`）+
+     **`require_admin` 中间件**（`middleware.rs`，`match user.role` 穷尽匹配）+ **`Router::nest("/admin")` + `route_layer`**（`lib.rs`）
+     → **`403` 已登场**。接受"角色变更不即时生效"，见 **3.3⑥**
+   - **d. ⬜ 提权端点 `PATCH /admin/users/{id}/role`** —— **暂缓**（"再练一次写路径"的可选项，触发条件见 3.4）
+   - **e. ✅ 已完成（不含分页）**：`get_all_users` 已复活并接到 **`GET /admin/users`**（**遗留点 4 收尾**），
+     `sql.rs` 补上 `ORDER BY id`；`UserResponse` 已含 `role`。**分页暂缓**（3.4）
+   - **f. 熟悉代码清单** —— **本阶段正事，见下方 6f**
+7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径（前置 lib.rs ✅ 已就位）—— **暂缓**（3.4）
 8. `git commit` 收尾 → 开新仓库做 Agent 的 V0
+
+### 6f. 熟悉代码清单（2026-10-11 起 —— 本阶段的正事）
+
+> **原则：读代码只能确认"看起来对"，跑一遍才知道真的对。** 何况 admin 链上有两条**只有执行才能看见**的事实
+> （三态码、提权不即时生效）；而 `data/users.db` 现在 **0 用户**，等于这条链从未被启动过。
+
+**前置：先造出一个 admin（二选一）**
+
+```sql
+-- 方案 1（推荐）：写进 seeds/00_admin.sql，手动执行一次
+--   表达"bootstrap 是运维动作，不是 API"（3.3⑤ A）
+INSERT INTO users (role, name, email, password_hash) VALUES ('admin','root','admin@example.com','<argon2 PHC 串>');
+
+-- 方案 2（临时）：先正常 POST /auth/register 注册，再直接提权
+UPDATE users SET role='admin' WHERE email='你的邮箱';
+```
+
+> ⚠️ **`password_hash` 不能手写明文**：要 PHC 串（`$argon2...`）。最省事的是走方案 2（注册端点会替你哈希），
+> 或者从测试里借 `hash_password` 生成一个再填进 seed。
+
+**A. `/admin/users` 的三态**（一次性观察中间件与授权层）
+
+| 请求 | 期望 | 看到了就证明 |
+|---|---|---|
+| 不带 token | **401** | 中间件里 `CurrentUser` 提取失败 → **认证**层拦截 |
+| 带普通用户 token | **403** | 命中 `require_admin` 的 `Role::User` 分支 → **授权**层拦截 |
+| 带 admin token | **200** + 全量列表 | 两层都过 + `get_all_users` 接线正确（顺带看 `role` 字段在不在响应里） |
+
+**B. 两个"撞一次就记住"的点**
+
+- **提权不即时生效**：`UPDATE role='admin'` 之后**必须重新登录**换新 token；拿旧 token 会一直吃 **403**。
+  这正是 **3.3⑥** 那条权衡（免查库 ⇄ 角色变更延迟）的现场验证 —— 亲手撞一次胜过读十遍。
+- **`route_layer` 只对已匹配的路由生效**：访问一个**不存在**的 `/admin/xxx` → 拿到的是 **404 而不是 401/403**。
+  这就是它和 `layer` 的区别（见第八节末）。
+
+**C. 补齐第二节验收清单的最后三条**（10-09 只跑通了第 1-6 条）
+
+```
+register → login → PATCH /me（只改 name，email/message 不变）
+        → PUT /me/password（旧密码错 → 401；旧密码对 → 200 且新密码可登录）
+        → DELETE /me（带旧 token 再访问 → 404 —— "注销后靠查库兜底"的现场验证）
+```
+
+**D. 顺手清理**：`lib.rs` 里的 `/admin/ping`（当时的临时验证路由）可以删了 —— `/admin/users` 已是真实路由。
+
+**E. 读代码的建议姿势**（比通读更有效）
+按**一次请求的完整生命周期**顺着读一遍，而不是按文件读：
+
+```
+请求进入
+  → lib.rs 的路由表（哪条路径 → 哪个 handler，中间件挂在哪一层）
+  → [若走 /admin] middleware::require_admin（提取 CurrentUser → 判 role）
+  → handler.rs（三行壳：提取 → 调 service → .into() + 信封）
+  → auth.rs（业务规则 / 错误翻译成 ApiError）
+  → sql.rs（只出 sqlx::Error 的纯查询）
+  → models.rs 的 From（实体 → 该观看者的视图）
+  → error.rs / response.rs（ApiError → 状态码；ApiResponse 统一信封）
+```
+
+读的时候对着上面这条链问三个问题，就能检验自己真的读懂了：
+**① 每层能"看见"什么、不能看见什么？**（依赖方向 / 谁依赖谁）
+**② 错误在哪一层从"数据库语言"翻译成"HTTP 语言"？**（`auth.rs` —— 唯一翻译边界）
+**③ 哪些错误是编译器/类型替我挡掉的？**（`UserEntity` 无 `Serialize`、"`password` 私有"、`CurrentUser` 在签名里＝权限在签名里）

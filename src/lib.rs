@@ -36,7 +36,6 @@ pub fn app(state: state::AppState) -> Router {
 
 fn admin(state: state::AppState) -> Router<AppState> {
     Router::new()
-        .route("/ping", get(|| async { "ping admin!" }))
         .route("/users", get(handler::get_all_users))
         .route_layer(axum::middleware::from_fn_with_state(
             state,
