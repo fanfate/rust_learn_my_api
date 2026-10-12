@@ -47,6 +47,9 @@
 - **✅ admin 链已实测跑通（2026-10-12）—— 原"唯一实质缺口"闭合**：`data/users.db` 造出 `root@local`(admin) /
   `alice@local`(user) 两个账号后，一次性打通 `401 / 403 / 200` 三态，并**现场撞到** 3.3⑥ 那条不一致窗口
   （提权后旧 token 仍 403、降权后旧 token 仍 200）。完整证据链见 **九·6f·A / 6f·B**。
+- **T2 执行清单已就绪（2026-10-12）**：**0 起步引导**（目录模型 / 一次请求四步骨架 / "只写一条"的渐进路径）
+  + 11 步请求顺序 + 要自答的 6 个问题 + 3 个坑 + 真实度光谱，已定案并写入 **§4.9**（只给问题不给答案）。
+  前置全就位：`lib.rs` ✅、`tower` ✅ 已在 `[dev-dependencies]`。**下一步就是动手。**
 - **公开端点的 `role` 暴露 —— ✅ 已移出（2026-10-12）**：匿名可访问的 `GET /users/{id}` 返回的
   `PublicUserResponse` 原**含 `role`** → 扫一遍 id 即得"谁是 admin"、且将来新增内部角色会**自动出现在公开端点**。
   它对该观看者**无任何用途**，违反本项目已定下的"端点返回类型 = 观看者有权看到的字段集合"。
@@ -509,7 +512,7 @@ sqlx::query_as::<_, UserEntity>("SELECT id, role, name, email, password_hash, me
 | **T0 纯函数单测** | `hash_password` / `verify_password`、`jwt::sign` / `validate` | 半小时 | ✅ **完成 2026-10-08（12 条全绿）** |
 | **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | ✅ **完成 2026-10-10（8 条，共 21 全绿）** |
 | admin + role | 角色迁移、中间件、403 | 1-2 天 | 🔄 **进行中 2026-10-10**（迁移 ✅ / `Role` enum ✅ / Claims ✅ / 中间件待写） |
-| **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | 与 admin 一起（前置 lib.rs ✅ 已完成；`tower` 待加） |
+| **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | ⬜ **未开始**（前置全就位：lib.rs ✅ / `tower` ✅ 已在 `[dev-dependencies]`）—— 清单见 **4.9** |
 
 T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，而 T1 已能覆盖绝大部分业务逻辑。
 
@@ -520,12 +523,13 @@ T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，�
 - 它给**每个测试建独立库并自动跑迁移**（sqlite 走真实临时文件，跑完删除）。顺带避掉经典坑：手写 `sqlite::memory:` 连接池时内存库按连接隔离，池内多连接 = 多个空库。
 - 读响应体：`axum::body::to_bytes(resp.into_body(), usize::MAX)`（axum 0.8.9 已确认存在）。
 - HTTP 层测试需 **`tower` 作 dev-dependency**（`oneshot` 在 `tower::util` 下，须显式声明 `features = ["util"]`，不能蹭 axum 的间接依赖）。
+  ✅ **已加（2026-10-10 / commit `6f7c776`）**：`tower = { version = "0.5", features = ["util"] }`。用于 `oneshot` 时必须 `use tower::ServiceExt;`（**trait 不在作用域内，方法就看不见**）。
 - **结构（✅ 2026-10-10 已解决）**：原先 crate 只有 `src/main.rs`、**没有 lib target**，`tests/` 下的集成测试**无法 `use my_api::...`**。
   已加 **`src/lib.rs`**（`pub mod ...` ×10 + `pub fn app(state) -> Router`，`main.rs` 变薄壳 —— Zero To Production 的标准结构；commit `6f7c776`）。
   ⚠️ **`main.rs` 必须删掉全部 `mod` 声明**，否则 bin 与 lib 各编译一遍，两份同名类型**互不相等**（`my_api::auth::UserEntity` ≠ bin 内 `crate::auth::UserEntity`），
   表现为莫名其妙的类型不匹配。**副作用**：转 lib 后 `pub` 项算"公开 API"，dead_code 报警对它们失效（见第八节）。
   T1 仍写在 crate 内（`auth.rs` 的 `#[cfg(test)] mod tests`，可访问私有字段）。
-- **T0/T1 都不需要新增依赖**：标准 `#[test]` 与 `#[sqlx::test]` 已够用（`[dev-dependencies]` 目前仍为空）。
+- **T0/T1 都不需要新增依赖**：标准 `#[test]` 与 `#[sqlx::test]` 已够用。`[dev-dependencies]` 现只有 **`tower`**（T2 用，`6f7c776` 加的）。
 
 ### 4.4 一个结构约束：`password` 字段是私有的
 
@@ -764,6 +768,137 @@ assert_eq!(persist.message, Some("message_2".to_string()));
 
 > 区分清楚：**登出 / token 失效**确实不存在（第七节的 refresh token / 黑名单），但这条指的是 `DELETE /me`（注销账号）。
 
+### 4.9 T2 检查清单（HTTP 层，2026-10-12 定案 —— **只给问题，不给答案**）
+
+> 原则同 §6f：**代码自己写，这里只负责"别漏"和"别想错"。**
+> 想动 T2 之前，先把下面"要自己答的 6 个问题"答完 —— **答不上来的那条，就是还没准备好的那条。**
+> **没有 Rust 集成测试经验 → 先读 0；只是来核对覆盖面的 → 直接跳到 A。**
+
+**0. 起步：第一次下手怎么写**
+
+**先换一个心智**：Rust 没有 FastAPI `TestClient` 那样的进程内"客户端对象"。
+`Router` **本身就是** tower 的 `Service`，"发一个请求" = **调用它一次**。这是 T2 唯一需要换的部分。
+
+**目录模型（两类测试住在不同地方 —— 最容易踩的认知差）**
+
+| | 单元测试 | 集成测试 |
+|---|---|---|
+| 住哪 | `src/auth.rs` 里的 `#[cfg(test)] mod tests` | **`tests/` 目录**（新建） |
+| 身份 | 与被测代码**同一个 crate** | **每个 `.rs` 文件 = 一个独立 crate** |
+| 能看见 | 全部（含私有字段 → T1 才构造得出 `UserRegister`） | **只有 `pub` 项** |
+| 怎么跑 | `cargo test` | `cargo test`（一起跑）/ `cargo test --test http`（单独跑） |
+
+两个落地后果：
+1. **每个测试文件都要 `use my_api::…`** —— 这正是当初要拆 `lib.rs` 的原因（§4.3 那个坑：没有 lib target，`tests/` 就 `use` 不到东西）。
+2. **共享 helper 必须放 `tests/common/mod.rs`**，不能放 `tests/common.rs` —— Cargo 把 `tests/` 下的**每个 `.rs` 文件**都当成一个测试二进制，
+   于是 `common.rs` 会被当成"一个测试文件"（跑出 0 个测试）；放进子目录则不会被自动发现。**这个小坑几乎人人踩一次。**
+
+**一次请求的四步骨架**
+
+```rust
+use tower::ServiceExt;                      // ← 忘这行，方法直接看不见（trait 必须在作用域内）
+
+let req = axum::http::Request::builder()    // ① 造请求
+    .method("GET")
+    .uri("/health")
+    .body(axum::body::Body::empty())
+    .unwrap();
+
+let resp = my_api::app(state).oneshot(req).await.unwrap();   // ② 发出去（消费 Router）
+
+assert_eq!(resp.status(), axum::http::StatusCode::OK);       // ③ 读状态码
+let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();   // ④ 读 body
+let _v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+```
+
+带 JSON body 只多一步：`.header("content-type", "application/json").body(Body::from(serde_json::json!({ /* … */ }).to_string()))`。
+
+> **依赖不用改**：`tests/` 目标能**同时**用 `[dependencies]`（`axum` / `serde_json` / `sqlx` / `tokio`）和 `[dev-dependencies]`（`tower`）。
+> 两条已核实的事实（本机 registry 源码，非记忆）：
+> `tower-0.5.3/src/util/mod.rs:89` → `fn oneshot(self, req: Request) -> Oneshot<Self, Request>`，约束仅 `Self: Service<Request> + Sized`；
+> `axum-0.8.9/src/routing/mod.rs:569` → `impl<B> Service<Request<B>> for Router<()>` ⇒ `app(state)` 的返回值**可直接** `oneshot`，**不需要** `.into_service()`。
+
+**起步只写一条：`GET /health` → 期望 `200 OK`**
+
+**别一次写下面那 11 条。** 先只写这一条，它跑绿就同时证明了五件事：
+① `tests/` 目录被 Cargo 认出来了 ② `use my_api::…` 编得过（lib target 正常）③ `AppState` 你构造得出来
+④ `oneshot` 驱动得了 `Router` ⑤ `resp.status()` 你读得出来。
+**任何一环错，这一条就会红，而且报错直接指到那一环**；过了这一步，后面只是往同一个骨架上加请求，工作量是线性的。
+
+命令三条：`cargo test`（全跑）/ `cargo test --test http`（只跑 `tests/http.rs`）/ `cargo test -- --nocapture`（看见你的 `println!`）。
+
+> **三个必然卡点**（`AppState` 怎么造 / `oneshot` 消费 self 怎么发多个请求 / 测试库里没有 admin）→ 见下方 **D 的第 1、2、5 问**。
+
+**A. 先把心智摆正：T2 不是 T1 的加强版**
+
+| | T1（service 层） | T2（HTTP 层） |
+|---|---|---|
+| 被测对象 | **业务规则**：函数的输入输出契约 | **接线**：HTTP 请求/响应契约 |
+| 怎么喂输入 | 直接调 `auth::register(pool, …)` | 构造 `Request` 丢给 `Router` |
+| 断言什么 | Rust 类型变体 `Err(ApiError::Conflict)` | 状态码数字 + JSON 形状 |
+| 覆盖到的层 | `service → sql` | 全链路：路由 → 提取器 → 中间件 → handler → service → **翻译 → 序列化** |
+| 覆盖不到 | 路由表 / 提取器 / 中间件 / 状态码 / JSON 形状 | 业务规则细节（T1 已锁，**不重复**） |
+
+**T1 永远测不到的五块**（这就是 T2 存在的全部理由）：
+① 路由表接线 ② JSON 反序列化（`UserRegister` 的 serde）③ 中间件（`CurrentUser` 提取失败 → 401、`require_admin` → 403）
+④ `ApiError` → 状态码的**翻译**（`IntoResponse`）⑤ 响应信封 + **字段裁剪**（不该出现的字段）。
+
+**B. 机制：不启服务器**
+
+`Router` 本身实现了 tower 的 `Service`，所以"发一个请求"= 直接调用它：
+
+```rust
+use tower::ServiceExt;                    // ← trait 不在作用域内，oneshot 就看不见
+let router = my_api::app(state);          // ← 复用生产代码的路由表，不重写一份
+let resp = router.oneshot(request).await.unwrap();
+// 之后：resp.status() → StatusCode；axum::body::to_bytes(resp.into_body(), usize::MAX) → serde_json::from_slice
+```
+
+**落位**：`tests/` 目录（集成测试，每个文件是**独立 crate**，必须 `use my_api::…`）。
+**可见性约束**：只能访问 `pub` 项 → **摸不到 `UserRegister.password`**（§4.4 那条约束会在这里真的挡你一下）。
+⚠️ 两个已确认的坑：`oneshot` **消费 `self`**（一个 `Router` 只能发一个请求）；**不要叠 `#[tokio::test]`**（`#[sqlx::test]` 自带运行时，§4.3）。
+
+**C. 建议顺序（从简到繁，每步只验证一层）**
+
+| # | 请求 | 期望 | 这一步在验证什么 |
+|---|---|---|---|
+| 1 | `GET /health` | 200 | 脚手架跑得通（`oneshot` + 状态码能读出来） |
+| 2 | `GET /me`（无 `Authorization`） | **401** | 提取器**失败**路径 —— **只有 HTTP 层测得到** |
+| 3 | `GET /me`（正确 Bearer） | 200 | 提取器成功路径 + token 传递 |
+| 4 | `POST /auth/register` 正常体 | **201** | 路由表 + JSON 反序列化 |
+| 5 | 同邮箱再来一次 | **409** | `Conflict` → 409 的**翻译** |
+| 6 | `POST /auth/register` 缺字段 / 非法 JSON | 400 还是 422？（**先跑出来看**） | axum `Json` 提取器的拒绝路径 |
+| 7 | `POST /auth/login` 密码错 | **401** | 错误翻译 + 信封 `message` |
+| 8 | 普通用户 token → `GET /admin/users` | **403** | `require_admin` 的 `Role::User` 分支 |
+| 9 | admin token → `GET /admin/users` | **200** | 两层都过 + `get_all_users` 接线 |
+| 10 | `GET /admin/xxx`（不存在） | **404，而非 401/403** | `route_layer` **只作用于已匹配的路由**（即 6f·B 那第三条，一直没跑） |
+| 11 | 匿名 `GET /users/{id}` | 200 且 body **无 `email` / 无 `role`** | **字段裁剪** —— T1 永远测不到的那条 |
+
+**D. 要自己答的 6 个问题（答完再动手）**
+
+1. `AppState` 的四个字段（`pool` / `access_ttl` / `encoding_key` / `decoding_key`），测试里各自**从哪来**？有没有现成的构造函数可以复用，还是得自己 `EncodingKey::from_secret(…)`？
+2. 一个测试里要发 **3 个**请求（注册 → 登录 → 打受保护端点），但 `oneshot` 消费 `self` —— 怎么写？
+3. 第 3 步的 token **从哪来**？走真实 `POST /auth/login`，还是直接 `jwt::sign` 造一个？**两种做法的取舍各是什么**（前者更真实但耦合登录；后者更快但绕过了登录）？
+4. `Response` 怎么变成能 `assert_eq!` 的东西？链条上每一步的返回类型是什么（`status()` / `into_body()` / `to_bytes(…, usize::MAX)` / `serde_json::from_slice::<Value>(…)`）？
+5. 第 8 步需要库里**先有一个 admin**。在 `#[sqlx::test]` 造的全新库里怎么造？（提示：注册端点**永远产 user**，§3.3③）
+6. 第 11 步怎么断言"**字段不存在**"？`serde_json::Value` 上 `get("role")` 拿不到时返回什么？该怎么写才是**强断言**（而不是"我忘了断言"）？
+
+**E. 三个坑 + 一条分工原则**
+
+- **坑 1**：`oneshot` 消费 `self` → 每次请求都 `my_api::app(state.clone())`（`AppState` 内部是 `SqlitePool`(Arc) + key，clone 便宜）。
+- **坑 2**：**断言失去编译器保护**。T1 里 `matches!(err, ApiError::Conflict)` 是类型安全的；T2 里 `assert_eq!(status, 409)` 就是一串数字，**写错编译器不管**。→ HTTP 层要写得更克制：只锁**契约**（状态码 + 必须/不能出现的字段），不锁实现细节。
+- **坑 3**：`#[sqlx::test]` **每次重跑全部迁移、跑完即删** → 别指望 `data/users.db` 里那两条数据（那是 §6f 手造的）。测试内需要的数据，一律用 API 或直接 SQL 现造。
+- **分工原则**：**判据 = "这条断言失败时，我知道该去改哪一层吗？"** 知道 → 归那一层测。
+  业务规则细节（密码长度 / 校验顺序 / 落库）已在 T1 锁死，HTTP 层**只确认它被翻译成了什么状态码**，不要重写一遍。
+
+**F. 真实度光谱（选最左那档就够）**
+
+| 档 | 做法 | 何时才需要 |
+|---|---|---|
+| **A** | `oneshot`（进程内，**T2 用这个**） | 覆盖路由 / 提取器 / 中间件 / 状态码 / 序列化形状 |
+| **B** | 真起 `axum::serve` + `reqwest` | 要测 TCP、超时、真实 header、**流式响应**时才用（SSE 那个兴趣点将来会用到） |
+| **C** | 起 server + curl | = §6f 手测。适合"看一眼形状"，**不算自动化测试** |
+
 ---
 
 ## 五、下一个项目：Rust Coding Agent（2026-10-07 定案）
@@ -964,7 +1099,9 @@ V3  继续长
    - **e. ✅ 已完成（不含分页）**：`get_all_users` 已复活并接到 **`GET /admin/users`**（**遗留点 4 收尾**），
      `sql.rs` 补上 `ORDER BY id`；`UserResponse` 已含 `role`。**分页暂缓**（3.4）
    - **f. 熟悉代码清单** —— **本阶段正事，见下方 6f**
-7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径（前置 lib.rs ✅ 已就位）—— **暂缓**（3.4）
+7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径 —— **前置全就位**（lib.rs ✅ / `tower` ✅ 已在 `[dev-dependencies]`）。
+   📋 **执行清单见 §4.9**（2026-10-12 定案：只给问题不给答案，含 11 步请求顺序 + 要自答的 6 个问题 + 3 个坑）。
+   现状 ⬜ **未开始**（§3.4 里 T2 不在暂缓表内，只是排在 6f 之后）。
 8. `git commit` 收尾 → 开新仓库做 Agent 的 V0
 
 ### 6f. 熟悉代码清单（2026-10-11 起 —— 本阶段的正事）
