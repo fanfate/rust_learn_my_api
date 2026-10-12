@@ -42,7 +42,6 @@ impl From<UserEntity> for UserResponse {
 #[derive(Serialize, Debug, Clone)]
 pub struct PublicUserResponse {
     pub id: i64,
-    pub role: Role,
     pub name: String,
     pub message: Option<String>,
 }
@@ -51,7 +50,6 @@ impl From<UserEntity> for PublicUserResponse {
     fn from(value: UserEntity) -> Self {
         Self {
             id: value.id,
-            role: value.role,
             name: value.name,
             message: value.message,
         }

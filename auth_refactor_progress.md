@@ -1,12 +1,12 @@
 # rust_learn_my_api 鉴权改造 —— 进度记录、Review 与后续路线
 
-> 记录时间：2026-09-30　最近更新：2026-10-11
+> 记录时间：2026-09-30　最近更新：2026-10-12
 > 代码由本人手动修改；本文件为进度文档的唯一维护源，由 AI 直接更新（工作区旧副本已废弃）
 > 前置：已完成 rustlings，按 plan.md 学习 axum web api；本次为 JWT 鉴权 + auth 体系改造
 
 ---
 
-## 〇、当前状态速览（2026-10-11 更新）
+## 〇、当前状态速览（2026-10-12 更新）
 
 - 鉴权改造已于 09-30 完成并通过 review，已提交：
   - `d90abc2 基本完成鉴权部分的改造`
@@ -36,17 +36,22 @@
 - **T2 前置（lib.rs）已完成并提交（2026-10-10 / commit `6f7c776 设置lib.rs管理mod`）**：新增 `src/lib.rs`
   （10 个 `pub mod` + `pub fn app(state) -> Router`），`main.rs` 变薄壳（**零 `mod` 声明**，改用 `use my_api::...`）；
   `cargo test` 仍 **21 绿**。⚠️ `main.rs` 若保留 `mod` 声明会导致 **crate 双编译 + 两份同名类型互不相等**。详见 **4.3**。
-- **role 落地已基本完成（2026-10-10，未提交）**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK(...)`；`Role` enum（3.3⑦）；
-  `UserEntity` / `UserResponse` / `PublicUserResponse` 加 `role`；**三处** SELECT 加 `role as "role: Role"`（3.3⑧）；
-  **`JwtClaims` 已加 `pub role: Role`**（`sign` / `new` 签名随之改，`login` 传 `&user.role`）。详见 **3.3⑥**。
+- **role 落地已完成并提交（2026-10-10）**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK(...)`（commit `f1310b8`）；
+  `Role` enum（3.3⑦）；`UserEntity` / `UserResponse` / `PublicUserResponse` 加 `role`；**三处** SELECT 加 `role as "role: Role"`（3.3⑧）；
+  **`JwtClaims` 已加 `pub role: Role`**（commit `bd0b445`；`sign` / `new` 签名随之改，`login` 传 `&user.role`）。详见 **3.3⑥**。
 - **admin 里程碑主体已完成并提交（2026-10-11 / commit `6626125 增加admin层和中间件`）**：
   `require_admin`（`middleware.rs`，用 **`match user.role` 穷尽匹配**而非 `if != Admin`）+ `Router::nest("/admin")`
   + `route_layer(from_fn_with_state(...))` + `ApiError::Forbidden`(403)；`get_all_users` 复活接到 `GET /admin/users`
   （**遗留点 4 正式收尾**，`sql.rs` 顺手补上了 `ORDER BY id` —— 注意它当时被加到了 `get_user_by_id`（主键单行，纯 no-op），已挪回 `get_all_users`）。
   `cargo test` → **21 绿 / 零回归**（2026-10-11 实测）。
-- **⚠️ 但这条链尚未真正跑通过**：`data/users.db` 是 **0 用户** → 连一个 token 都拿不到 →
-  `401 / 403 / 200` 三态、以及「提权后必须重新登录」（**3.3⑥** 那条权衡）都还停在"代码看起来对"的层面。
-  **这是当前唯一的实质缺口**，清单见 **九·6f**。
+- **✅ admin 链已实测跑通（2026-10-12）—— 原"唯一实质缺口"闭合**：`data/users.db` 造出 `root@local`(admin) /
+  `alice@local`(user) 两个账号后，一次性打通 `401 / 403 / 200` 三态，并**现场撞到** 3.3⑥ 那条不一致窗口
+  （提权后旧 token 仍 403、降权后旧 token 仍 200）。完整证据链见 **九·6f·A / 6f·B**。
+- **公开端点的 `role` 暴露 —— ✅ 已移出（2026-10-12）**：匿名可访问的 `GET /users/{id}` 返回的
+  `PublicUserResponse` 原**含 `role`** → 扫一遍 id 即得"谁是 admin"、且将来新增内部角色会**自动出现在公开端点**。
+  它对该观看者**无任何用途**，违反本项目已定下的"端点返回类型 = 观看者有权看到的字段集合"。
+  **已从该 DTO 移出**（`models.rs` 删字段 + 删 `From` 里那一行；`cargo test` → **21 绿 / 零告警 / 测试零改动**）。
+  详见 **3.3⑨ / 遗留点 8**。
 - **结论：核心目标已达成**——axum 核心概念（提取器 / 路由 / 中间件 / `Layer` / 状态 / 错误映射）已各用一遍。
   剩余项（seeds 自举、提权端点、T2、分页、**中间件生态**）已于 2026-10-11 **定案为"暂缓"**，理由与触发条件见 **3.4**。
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
@@ -75,13 +80,13 @@ GET    /health            健康检查
 | 决策 | 理由 |
 |---|---|
 | **提取器而非中间件做鉴权**（`CurrentUser`） | 类型即权限：handler 签名里有没有 `CurrentUser` 一眼可辨；编译器保证不会漏。中间件方案留给将来 `/admin` 的角色校验 |
-| **轻版提取器**：`CurrentUser { id: i64 }`，只验签不查库 | 认证（JWT）与取数（数据库）职责分离；与窄依赖原则同构；避免双查询；可测性更好 |
+| **轻版提取器**：`CurrentUser`，只验签不查库 | 认证（JWT）与取数（数据库）职责分离；与窄依赖原则同构；避免双查询；可测性更好。⚠️ **字段已由 `{ id }` 演进为 `{ id, role }`**（`auth.rs:29-33`）—— `role` 进了 Claims，提取器就必须带上它，否则 `require_admin` 无从判角色（**2026-10-12 订正**） |
 | **`/me` 替代 `PUT /users/{id}` 自助接口** | 从结构上消灭越权可能（路径里没有 id，"用不可变的结构替代可遗忘的检查"） |
 | **`/admin/*` 前缀留给将来** | 角色校验用 `nest` + `layer` 在路由层批量生效，`403 Forbidden` 在那时登场 |
 | **PATCH /me 部分更新，PUT /me/password 凭据替换** | PATCH = 部分字段更新（Option 字段）；密码是单值凭据整体替换 + 需验证旧凭据，属"动作"，用 PUT |
 | **JWT 只存 id（`sub`），资料必查库** | payload 是 Base64 可读，不放 PII；id 不可变；资料以库为准防陈旧 |
 | **实体/DTO 分离**：`UserEntity`（全列含 hash）+ `UserResponse`（无 hash）+ `From` 转换 | 查询函数只按"查找方式"增减；暴露字段的变化只动 DTO 层 |
-| **视图按"观看者"再分一层**（`UserResponse` 本人 / `PublicUserResponse` 公开） | 端点返回类型 = 该端点观看者有权看到的字段集；观看者不同就不该共享 DTO。字段显式枚举，将来给 `UserEntity` 加列不会自动泄漏（fail-closed） |
+| **视图按"观看者"再分一层**（`UserResponse` 本人 / `PublicUserResponse` 公开） | 端点返回类型 = 该端点观看者有权看到的字段集；观看者不同就不该共享 DTO。字段显式枚举，将来给 `UserEntity` 加列不会**自动**泄漏（fail-closed）。⚠️ 但"显式枚举"只防**自动**泄漏，**防不住**"加了却没过审查"—— `role` 就是这么进了公开 DTO（**2026-10-12 已移出**，见 **3.3⑨ / 遗留点 8**） |
 | **`UserEntity` 只派生 `Clone`**（无 Serialize） | 结构上杜绝 hash 被序列化出网；出门唯一路径是 `From → UserResponse` |
 | **service 层窄依赖**：收 `pool` / `encoding_key` / `ttl` 等具体参数，不收 `&AppState` | `Zero To Production` 风格；签名即依赖清单；换容器零成本；**测试时只需一个 pool，构造成本近乎为零**。窄依赖只约束 service 层以下，handler 收 `&AppState` 天经地义 |
 | **service 返回完整业务产物**（`UserEntity` / `LoginResponse`） | 业务动词闭环；复用方免粘合；事务边界将来收在 service 内 |
@@ -144,12 +149,29 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
    - 事实：`users.id` 是 `AUTOINCREMENT` 且 `/users/{id}` 无鉴权 → 理论上 `for` 循环即可遍历出
      "有多少用户 / 按注册顺序的用户目录"（email harvesting 的入口）
    - **为什么现在可接受**：`data/users.db` 的 users 表 0 行、服务仅本地访问 → 当前**没有可枚举的对象**；
-     且该端点返回的 `PublicUserResponse` 已不含 email（字段侧已守住，见下方"两个正交的安全维度"）
+     且该端点返回的 `PublicUserResponse`**既不含 email、也不含 `role`**（字段侧，见下方"两个正交的安全维度"；
+     `role` 是 2026-10-12 发现并**同日移出**的，见**遗留点 8**）
    - **升级触发条件（三条同时满足才值得动）**：端点真正对外 + 有真实用户数据 + 会返回他人信息
    - **升级路径**：加 `public_id` 列（UUID/随机 token + 唯一索引，API 层只用它定位资源），**不替换自增主键**
      —— 换主键要付索引碎片 / 存储翻倍 / 可读性下降三重代价，而且**并不解决授权**
    - ⚠️ **概念别记错**：UUID/`public_id` 是**纵深防御，不是访问控制**。"改 id 拿到别人数据"这个伤害靠**授权检查**兜底，
      与"ID 长什么样"正交 —— 别把"上了 UUID"当成"授权做完了"
+8. **公开端点暴露 `role` —— ✅ 2026-10-12 已移出**（同日发现 → 同日修复）
+   - 事实：`GET /users/{id}` 无鉴权（handler 无 `CurrentUser`）→ 匿名访客读 `PublicUserResponse`，
+     而它**含 `role`**（`models.rs:43-48`）→ `for id in 1..N` 扫一遍即得"哪些用户是 admin"
+   - **为什么该改**（不是因为它"很危险"—— 它是**侦察**，不是**越权**）：
+     ① 对匿名观看者**无任何用途**，违反本项目已定下的"端点返回类型 = 观看者有权看到的字段集合"；
+     ② 它是 `Role` 枚举的**直接透传** → 将来加 `Support` / `Billing` 等内部角色会**自动出现在公开端点**，
+        没有任何一处代码会提醒你（"公开契约透传内部类型"的通病）
+   - **危害量级：低** —— 知道谁是 admin 带不来权限，但会**收窄攻击面**（撞库/钓鱼从"撞 N 个用户"变成"只撞那 1 个"）
+   - **定案**：**从 `PublicUserResponse` 移出 `role`**（`/me`、`/auth/login`、`/admin/users` 走 `UserResponse`，不受影响）
+   - **✅ 已执行（2026-10-12）**：`models.rs` 删 `role` 字段 + 删 `From` 中那一行；`cargo test` → **21 passed / 零代码告警**、
+     **测试零改动**（与预判一致 —— 全仓确实没有引用该字段的代码/测试）
+   - **改动面**：`models.rs` 两处（删字段 + 删 `From` 里那一行），`handler.rs:21` 的 `.into()` 自动适配；
+     **零测试影响**（全仓无任何代码/测试引用 `PublicUserResponse` 的字段）
+   - **将来若要"公开展示管理员"**：加的是**派生标签**（`is_moderator: bool` / `badges: [...]`），
+     **不是**把内部 `Role` 枚举搬回公开 DTO —— 惯例参照 GitHub 公开 API：暴露的是**布尔** `site_admin`，不是内部角色名
+   - 完整分析见 **3.3⑨**
 
 ### 两个正交的安全维度：字段可见性 vs 资源可枚举性（2026-10-09）
 
@@ -157,7 +179,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 | 维度 | 问的问题 | 现状 | 升级项（可延后） |
 |---|---|---|---|
-| **A 字段可见性** | 谁会看到哪些列 | ✅ 已处理：DTO 按观看者分叉（`PublicUserResponse` 无 email） | 窄查询：SQL 只 `SELECT` 需要的列 |
+| **A 字段可见性** | 谁会看到哪些列 | ✅ DTO 按观看者分叉（`PublicUserResponse` 无 email、无 `role`） | 窄查询：SQL 只 `SELECT` 需要的列 |
 | **B 资源可枚举性** | id 能不能被遍历 | ⚠️ 遗留：自增 id 可枚举（遗留点 7） | 加 `public_id` 列 |
 
 **"分叉"要分两层看（最容易混的地方）**：
@@ -173,6 +195,8 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 - **将来做 L2 的形状**（照抄即可）：每个视图一条 `SELECT`，service 直接返视图类型、而不是返 `UserEntity`。
 - **与 UUID 的关系**：L1 已把 `email` 挡在边界外；维度 B（UUID/`public_id`）与维度 A（L1/L2）是**两条独立的轴**。
   两者都属**纵深防御**，都不能替代**服务端授权检查** —— 别把"上了 UUID"误当成"授权做完了"。
+- ⚠️ **维度 A 不是"做完一次就永久成立"**：DTO 分叉是**每个字段、每个出口**各自成立的判断，
+  加新字段时必须**重新过一遍**"这个观看者该不该看它"。`role` 就是加了却没过审查的例子（**3.3⑨ / 遗留点 8**）。
 
 ### 验收清单（改动后手动跑一遍）
 
@@ -222,7 +246,7 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 > 一句话：**补上测试 + 做完 admin/role，这个项目就够本了**；之后它作为"资产"保留，下一个项目会直接复用它。
 
-### 3.3 admin + role 的设计决策（2026-10-10 定案）
+### 3.3 admin + role 的设计决策（2026-10-10 定案；2026-10-12 追加 ⑨）
 
 **问题：admin 的注册要不要和普通用户分开？**
 
@@ -284,8 +308,15 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 **决定：按 A + B 实施；role 写进 Claims（接受"不即时生效"）；`require_admin` 用中间件（`Router::nest("/admin") + layer`）。**
 
-> **✅ 状态（2026-10-10）：已落地生效。** `JwtClaims` 已加 `pub role: Role`（`jwt.rs`），`sign` / `new(id, &Role, ttl)` 签名随之改，`login` 传 `&user.role`
+> **✅ 状态（2026-10-10）：已落地生效；（2026-10-12）：已实测确认 —— 这条权衡不再是"推导"，是"实测"。**
+> `JwtClaims` 已加 `pub role: Role`（`jwt.rs`），`sign` / `new(id, &Role, ttl)` 签名随之改，`login` 传 `&user.role`
 > （传引用是对的：`login` 之后还要用 `user` 造 `LoginResponse`，避免在调用处 `clone`）。
+>
+> **实测证据链（2026-10-12）**：
+> - **提权不即时生效** —— 提权 alice 后拿**旧 token**（签发时 `role="user"`）打 `/admin/users` → 仍 **403**；
+>   重新登录得新 token → **200**。
+> - **降权不即时生效（更值得记）** —— 降权 alice（admin→user）后拿**旧 token** 打 → 仍 **200**，直到 token 过期。
+> - **两个方向都亲眼撞到**，代码原文"用 token 里的 role 判权"得到现场确认。
 >
 > **随"加字段"一起来的第二条后果**：`role` 是**必填**（非 `Option`、无 `#[serde(default)]`）→
 > **此前签发的所有 token 立即失效**——旧 token 里没有 `role`，`validate()` 反序列化 `JwtClaims` 会因缺字段报错 → 被当成 401。
@@ -372,6 +403,49 @@ sqlx::query_as::<_, UserEntity>("SELECT id, role, name, email, password_hash, me
 
 > 实测（2026-10-10）：临时 crate 指向本项目库副本 —— 无注解精确复现 `Role: From<String>`；上述两条解法均编译通过。
 > 顺带：`get_user_by_id` / `get_user_by_email` 的 SELECT **原本漏了 `role` 列**，会报 `missing field role`（E0063），加注解前先补列。
+
+#### ⑨ 公开端点要不要暴露 `role`？（2026-10-12 定案）
+
+**结论：公开的 `GET /users/{id}` 不该暴露 `role` —— 从 `PublicUserResponse` 移出。** ✅ **2026-10-12 已执行**（见下"执行结果"）。
+
+**先把层级摆正**：这不是漏洞，是"这个字段有没有**意图**"的区别。很多站点确实公开展示管理员身份，但那几乎都是**有意暴露**：
+
+| | 性质 | 例子 |
+|---|---|---|
+| **有意暴露 = 产品特性** | 角色承担**公共职能**，公开它是在告诉用户"该找谁" | Discourse 版主徽章、Discord 角色色、Stack Overflow 钻石标 |
+| **无意泄露 = 信息暴露** | 角色是**内务授权状态**，匿名访客拿它没有任何用途 | 内部系统 / 通用用户查询端点 |
+
+**判据（任一为"否"就别放）**：① 匿名访客拿到它**能干什么**？② 它是**公共职能**还是**内务授权**？③ 它会不会随**内部模型一起长胖**？
+
+**本项目为什么不过关**：`role` 是**后加字段** —— 加 `Role` 到 `UserEntity` 时，它顺着 `From<UserEntity>` 的实现自动流进了**每个** DTO，包括公开那个。
+它**没有经过当年 `email` 那道审查**（"匿名不该看 email" → 拆出 `PublicUserResponse`）：不是因为审查后放行，而是因为**没人再问一遍**。
+按已定下的原则（*端点返回类型 = 该端点观看者有权看到的字段集合*），匿名访客对 `role` **没有任何合法用途**。
+
+**判据 ③（最容易被忽略的一条）**：`PublicUserResponse.role` 是 `Role` 枚举的**直接透传** ——
+将来加 `Support` / `Billing` 角色时，它们会**自动出现在公开端点**，没有任何一处代码会提醒你。
+所以公开契约必须是**独立定义、有意承诺**的，不能是内部类型的管道。
+
+**惯例的三档做法**：
+
+| 做法 | 形态 | 典型 |
+|---|---|---|
+| **A. 公开派生标签** | 暴露 `is_moderator: bool` / `badges: [...]`，**不透传内部枚举** | GitHub 公开 API 的 `site_admin`（是**布尔**，不是角色名）、Discourse |
+| **B. 完全不暴露** | 公开端点只给公开资料；`role` 只出现在 `/me` 与 `/admin/*` | 绝大多数企业 / 内部 API（**默认姿势**） |
+| **C. 分端点** | 公开资料端点 vs 管理端点，各自独立 DTO | REST 惯例 |
+
+**执行结果（2026-10-12）**：改动确实**只有那两行** —— `handler.rs` 一行未动（`.into()` 自动适配）、**测试一条未改**；
+`cargo test` → **21 passed**、`cargo check` **零代码告警**。预判的"改动面"与实测**完全一致** ——
+这是"先算清影响面再动手"的一次正反馈，也是本项为什么敢"顺手做掉"的依据。
+
+**危害量级（别高估）**：**低**。知道谁是 admin 不构成越权 —— 它是**侦察**（reconnaissance），不是**利用**（exploit）。
+最具体的伤害是**定向攻击面收窄**：撞库 / 钓鱼从"撞 N 个用户"变成"只撞那 1 个 admin"。
+
+**改动面（很小）**：`models.rs` 两处 —— `PublicUserResponse` 删掉 `role: Role` 字段 + 对应的 `From<UserEntity>` 实现删掉 `role: value.role` 那一行。
+`handler.rs:21` 的 `.into()` 自动适配；**零测试影响**（全仓无任何代码 / 测试引用 `PublicUserResponse` 的字段）。
+`/me`、`/auth/login`、`/admin/users` 均返回 `UserResponse`（本人 / 管理员视角），**不受影响**。
+
+**将来若要"公开展示管理员"**：那时加的是**派生标签**（`is_moderator: bool`），而不是把内部 `Role` 枚举搬回公开 DTO。
+完整事实与改动清单见 **遗留点 8**。
 
 ---
 
@@ -817,6 +891,10 @@ V3  继续长
 - **函数返回内存对象时，断言返回值证明不了落库**：先读库 → 改内存 → 写库 → `Ok(内存对象)` 的模式下，"返回值正确"与"数据库真的写了"是两件事；要验证落库，必须在更新**之后重新读一次库**
 - **公开注册端点永远不接受 `role` 之类的授权字段**（mass assignment 越权）。管理员由「自举（绕开公开 HTTP）+ 提权（受保护端点）」产生 —— **"admin 注册"不该是一个端点**；"注册"一词天然含"匿名可调"，而特权产生天生不该匿名可调
 - **授权信息塞进凭据会引入不一致窗口**：JWT 带 `role` 后，**提权**要重登才生效（旧 token 仍是旧角色），**降权**则旧 token 仍可用直到过期 —— "免查库"的收益正是冒这个窗口的风险换来的
+- **这个不一致窗口是"可被观测"的，不只是理论**（2026-10-12 实测）：降权后拿旧 token 打 `/admin/users` 仍是 **200**，
+  而**同一个响应体**里该用户的 `role` 已经显示成 `"user"` —— **授权读的是 token 里的旧值（放行），数据读的是库里的新值（已降权）**。
+  也就是说，一次请求内就自相矛盾：**凭据里的授权信息与库里的真实状态在窗口内分叉，且这个分叉会直接泄漏进响应**。
+  推论：凡"凭据带授权字段 + 响应带同一字段"，就一定会出现这种肉眼可见的矛盾；要么接受（学习阶段），要么把授权改成**回库查一次**（放弃免查库）
 - **`query_as!` 宏看不到目标类型的字段定义**：它只能从 SQL 列的声明类型推断 Rust 类型、再用 `.into()` 桥接到结构体字段。SQLite 把 TEXT 推断为 `String`，
   所以自定义类型（enum / newtype）**必须写列类型注解** `col as "col: Type"`，否则报 `X: From<String>`。所谓"绕过"（给类型实现 `From<String>`）会牺牲 fail-closed，别用
 - **"有限、封闭、语义明确的集合"用 enum，别用 `String`**（角色、状态、来源…）：DB/JSON 是**边界**（字符串是它们的母语），程序**内部**保持类型安全。
@@ -845,6 +923,15 @@ V3  继续长
   分工因此更干净：**认证（你是谁）与授权（你能不能）各落一处**
 - **判角色用 `match` 而不是 `if x != A`**：`match` 在**新增枚举变体时编译报错**，逼你显式决定放行还是拒绝；`if != A` 会静默落进某分支。
   又一次"让编译器替我列待办"
+- **新字段不会自动获得"可公开"的通行证**：给 `UserEntity` 加列后，它会顺着 `From<UserEntity>` 流进**每个** DTO。
+  "字段显式枚举"只防**自动**泄漏，**防不住**"加了却没重新过一遍审查" ——
+  每条出口都要单独回答"**这个观看者该不该看它**"，而且**每加一个字段就要重跑一遍**。
+  `PublicUserResponse.role` 就是这么漏进去的（**3.3⑨ / 遗留点 8**）
+- **公开契约不该是内部类型的管道**：公开 API 暴露的应是**独立定义、有意承诺**的字段；直接透传内部枚举
+  （`role: Role`）意味着**将来扩充内部枚举会静默扩大公开面**。要公开"身份"就暴露**派生标签**
+  （GitHub 公开 API 的 `site_admin` 是**布尔**，不是内部角色名）—— 两者的差别是"承诺"与"顺带"
+- **侦察 ≠ 利用**：把"暴露了信息"与"能否被越权"分开评估。"谁是 admin"属**侦察**（为定向攻击收窄目标），
+  不构成**利用**（拿不到任何权限）—— 所以严重度低；但它会被"将来加角色"自动放大，属于**现在改最便宜**的一类
 
 ---
 
@@ -857,15 +944,19 @@ V3  继续长
    4.8 的 ①~⑤ **全部补齐**（`chars().count()` / 先验旧密码 + **顺序哨兵** / `test_update` 强断言 / **落库重读** / `delete_me` 三条断言）。
    工作树已干净。顺手可把哨兵处重复的 `update_pwd_1` / `pwd_res1` 改成不同名字（非必须）。
 4. **补跑第二节验收清单**：10-09 已跑通第 1-6 条（`login` 首次真正执行）；**第 7-9 条**（PATCH / PUT password / DELETE 的 HTTP 层）留到 T2 一起。
+   - **2026-10-12 更新**：另已补跑 **admin 链的三态 + 提权/降权窗口**（见 **6f·A/B**）—— 第 7-9 条仍留 T2。
 5. **T2 前置 —— ✅ `src/lib.rs` 已完成并提交（2026-10-10 / commit `6f7c776`）**：10 个 `pub mod` + `pub fn app(state) -> Router`，
    `main.rs` 变薄壳（**零 `mod` 声明**，改用 `use my_api::...`）；`cargo test` 仍 21 绿。
    - ⚠️ 坑：`main.rs` 若保留 `mod` 声明 → **crate 双编译 + 两份同名类型互不相等**（详见 **4.3** / 第八节）。
-   - ⏳ **剩余**：`Cargo.toml` 加 `[dev-dependencies] tower = { version = "0.5", features = ["util"] }`（**T2 才用**，现在不加无妨；读 body 用 `axum::body::to_bytes`，无需额外依赖）。
+   - ✅ **`tower` 也已加好**（**同一个 commit `6f7c776`**）：`[dev-dependencies] tower = { version = "0.5", features = ["util"] }`。
+     ⚠️ **2026-10-12 订正**：本项原文写"⏳ 剩余"，与 **3.4** 表格中"`tower` 目前**只在 `[dev-dependencies]`**"**自相矛盾** —— 实际早已加好。
+     仍未做的是 **`tests/` 目录**本身（集成测试文件，到 T2 才建）。读响应体用 `axum::body::to_bytes`，无需额外依赖。
 6. **admin + role**（设计已定案，见 **3.3**）—— ✅ **主体已完成（2026-10-11 / commit `6626125`）**，余项按 **3.4** 定案暂缓：
    - **a. ✅ 已完成**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))`；`Role` enum（3.3⑦）；`UserEntity` / `UserResponse` /
      `PublicUserResponse` 加 `role`；**三处** SELECT 加类型注解 `role as "role: Role"`（3.3⑧）。
    - **b. ⬜ `seeds/00_admin.sql` 自举首个 admin** —— **仍建议做（成本 = 4 行 SQL）**：不写它，admin 链就没有可执行的起点
      （也可临时用 `sqlite3 UPDATE` 代替，见 **6f** 前置）。⚠️ **注册端点不动，永远产 user**（`UserRegister` 不加 `role` 字段）
+     - **2026-10-12 现状**：6f 实跑走的是**方案 2**（注册 + `sqlite3 UPDATE`），`seeds/` 目录**仍未建**；方案 2 足以验证链，但"bootstrap 是运维动作"这层语义还没落成文件
    - **c. ✅ 已完成**：**Claims 加 `role`**（`jwt.rs`：`pub role: Role`；`sign` / `new` 签名随之改、`login` 传 `&user.role`）+
      **`require_admin` 中间件**（`middleware.rs`，`match user.role` 穷尽匹配）+ **`Router::nest("/admin")` + `route_layer`**（`lib.rs`）
      → **`403` 已登场**。接受"角色变更不即时生效"，见 **3.3⑥**
@@ -879,7 +970,11 @@ V3  继续长
 ### 6f. 熟悉代码清单（2026-10-11 起 —— 本阶段的正事）
 
 > **原则：读代码只能确认"看起来对"，跑一遍才知道真的对。** 何况 admin 链上有两条**只有执行才能看见**的事实
-> （三态码、提权不即时生效）；而 `data/users.db` 现在 **0 用户**，等于这条链从未被启动过。
+> （三态码、提权不即时生效）；而 `data/users.db` 原本 **0 用户**，等于这条链从未被启动过。
+>
+> **✅ 进度（2026-10-12）：A、B 已实测完成；C 未跑；B 的第三条（`route_layer` → 404）未跑。**
+> 造账号走的是**方案 2**（先 `POST /auth/register` 再 `sqlite3 UPDATE` 提权），服务端口 `3000`。
+> 库内现有 `1 root@local admin` / `2 alice@local user`（`alice@local` / `user12345` 保留给 T2 测 403）。
 
 **前置：先造出一个 admin（二选一）**
 
@@ -895,22 +990,27 @@ UPDATE users SET role='admin' WHERE email='你的邮箱';
 > ⚠️ **`password_hash` 不能手写明文**：要 PHC 串（`$argon2...`）。最省事的是走方案 2（注册端点会替你哈希），
 > 或者从测试里借 `hash_password` 生成一个再填进 seed。
 
-**A. `/admin/users` 的三态**（一次性观察中间件与授权层）
+**A. ✅ 已完成（2026-10-12）：`/admin/users` 的三态**
 
-| 请求 | 期望 | 看到了就证明 |
-|---|---|---|
-| 不带 token | **401** | 中间件里 `CurrentUser` 提取失败 → **认证**层拦截 |
-| 带普通用户 token | **403** | 命中 `require_admin` 的 `Role::User` 分支 → **授权**层拦截 |
-| 带 admin token | **200** + 全量列表 | 两层都过 + `get_all_users` 接线正确（顺带看 `role` 字段在不在响应里） |
+| 请求 | 期望 | 实测 | 看到了就证明 |
+|---|---|---|---|
+| 不带 token | **401** | ✅ **401** | 中间件里 `CurrentUser` 提取失败 → **认证**层拦截 |
+| 带普通用户 token | **403** | ✅ **403** | 命中 `require_admin` 的 `Role::User` 分支 → **授权**层拦截 |
+| 带 admin token | **200** + 全量列表 | ✅ **200** | 两层都过 + `get_all_users` 接线正确（这里的 `role` 是**管理员视角**该看到的，合理 —— 别与 **遗留点 8** 的匿名泄露混为一谈） |
 
-**B. 两个"撞一次就记住"的点**
+**B. ✅ 已完成（2026-10-12）：两个"撞一次就记住"的点**
 
-- **提权不即时生效**：`UPDATE role='admin'` 之后**必须重新登录**换新 token；拿旧 token 会一直吃 **403**。
+- **★ 提权不即时生效** —— `UPDATE role='admin'` 之后**必须重新登录**换新 token；拿旧 token 会一直吃 **403**。
+  实测链路：`token A`（登录时 `role="user"`）→ 提权 alice → **旧 token A 打 `/admin/users` 仍 403** → 重新登录得 `token B` → **200**。
   这正是 **3.3⑥** 那条权衡（免查库 ⇄ 角色变更延迟）的现场验证 —— 亲手撞一次胜过读十遍。
-- **`route_layer` 只对已匹配的路由生效**：访问一个**不存在**的 `/admin/xxx` → 拿到的是 **404 而不是 401/403**。
-  这就是它和 `layer` 的区别（见第八节末）。
+- **★ 反向也成立，且更值得记：降权不即时生效** —— 降权 alice（admin→user）后拿**旧 `token B`** 打 `/admin/users`
+  → 仍是 **200**（旧 token 到过期前一直有效）。**同一响应里还有个微妙现象**：返回体中 alice 的 `role` 已显示 `"user"`（**数据读库里的新值**），
+  但请求被**放行**（**授权读 token 里的旧值**）—— 一个请求里"授权用旧值、数据用新值"同时成立。
+  这就是那条不一致窗口的**可观测形态**，已提炼进 **第八节**。
+- ⬜ **`route_layer` 只对已匹配的路由生效**（**未跑**）：访问一个**不存在**的 `/admin/xxx` → 期望 **404 而不是 401/403**。
+  这是它和 `layer` 的区别（见第八节末）。补跑成本极低（一条 `curl`），可顺手做掉。
 
-**C. 补齐第二节验收清单的最后三条**（10-09 只跑通了第 1-6 条）
+**C. ⬜ 补齐第二节验收清单的最后三条**（10-09 只跑通了第 1-6 条；**截至 2026-10-12 仍未跑**，留待 T2）
 
 ```
 register → login → PATCH /me（只改 name，email/message 不变）
@@ -918,7 +1018,11 @@ register → login → PATCH /me（只改 name，email/message 不变）
         → DELETE /me（带旧 token 再访问 → 404 —— "注销后靠查库兜底"的现场验证）
 ```
 
-**D. 顺手清理**：`lib.rs` 里的 `/admin/ping`（当时的临时验证路由）可以删了 —— `/admin/users` 已是真实路由。
+**D. 顺手清理（两处，其中一处已完成）**
+
+- ✅ **已完成**：`lib.rs` 里的 `/admin/ping` 已删（`2823a02`）—— 当时理由：`/admin/users` 已是真实路由。
+- ✅ **已完成（2026-10-12）**：`PublicUserResponse` 移出 `role`（**3.3⑨ / 遗留点 8**）—— 改动 2 行、**测试零改动**、21 绿。
+  随后于同日完成 6f 的 A/B 实跑，观察到的响应形状就是"想要的形状"。
 
 **E. 读代码的建议姿势**（比通读更有效）
 按**一次请求的完整生命周期**顺着读一遍，而不是按文件读：
