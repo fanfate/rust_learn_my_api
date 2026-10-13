@@ -48,7 +48,8 @@
   `alice@local`(user) 两个账号后，一次性打通 `401 / 403 / 200` 三态，并**现场撞到** 3.3⑥ 那条不一致窗口
   （提权后旧 token 仍 403、降权后旧 token 仍 200）。完整证据链见 **九·6f·A / 6f·B**。
 - **T2 执行清单已就绪（2026-10-12）**：**0 起步引导**（目录模型 / 一次请求四步骨架 / "只写一条"的渐进路径）
-  + 11 步请求顺序 + 要自答的 6 个问题 + 3 个坑 + 真实度光谱，已定案并写入 **§4.9**（只给问题不给答案）。
+  + 11 步请求顺序 + **手工走查链 → 测试的拆分模型（C.1，2026-10-13）** + 要自答的 6 个问题 + 3 个坑 + 真实度光谱，
+  已定案并写入 **§4.9**（只给问题不给答案）。
   前置全就位：`lib.rs` ✅、`tower` ✅ 已在 `[dev-dependencies]`。**下一步就是动手。**
 - **公开端点的 `role` 暴露 —— ✅ 已移出（2026-10-12）**：匿名可访问的 `GET /users/{id}` 返回的
   `PublicUserResponse` 原**含 `role`** → 扫一遍 id 即得"谁是 admin"、且将来新增内部角色会**自动出现在公开端点**。
@@ -874,6 +875,45 @@ let resp = router.oneshot(request).await.unwrap();
 | 10 | `GET /admin/xxx`（不存在） | **404，而非 401/403** | `route_layer` **只作用于已匹配的路由**（即 6f·B 那第三条，一直没跑） |
 | 11 | 匿名 `GET /users/{id}` | 200 且 body **无 `email` / 无 `role`** | **字段裁剪** —— T1 永远测不到的那条 |
 
+**C.1 手工走查链 → 测试的拆分模型（2026-10-13 定案）**
+
+§6f·C 那条链（`register → login → PATCH /me → PUT /me/password → DELETE /me`）是**手动走查脚本**
+（`curl` 一步接一步、状态拿在手里往下递、边跑边看），**不是测试设计** —— 直接照抄成"一条测试跑到底"是错的。转换规则只有一条：
+
+> **链的前缀 = setup（fixture）；链上每个"观察点" = 一条独立测试。**
+
+`register + login` 收进 helper（返回 `(id, token)`），剩下四条各测一个行为：
+
+| 测试 | 请求序列 | 断言（T2 只锁 HTTP 契约） |
+|---|---|---|
+| `test_patch_me_name_only` | setup → `PATCH /me` | 200；body 里 `name` 变、`email`/`message` 不变 |
+| `test_change_pwd_wrong_old` | setup → `PUT /me/password` | **401**（`Unauthorized` → 401 的**翻译**） |
+| `test_change_pwd_ok` | setup → `PUT /me/password` | **200** |
+| `test_delete_me_then_404` | setup → `DELETE /me` → 再 `GET /me`（**同一旧 token**） | DELETE 200；**再访问 404**（"注销后靠查库兜底"的 HTTP 层证据） |
+
+**两条不让整条链成立的硬理由：**
+- **诊断性**：链断在第 3 步，后面 3 个行为一个都观察不到；拆开后每条独立报错、**名字即行为**、还能 `cargo test <name>` 单跑。
+- **T1/T2 收手**：第 8 条里"**新密码可登录**"已被 **T1** 的 `test_update_password`（`auth.rs:457`，含新密码可登录 + 旧密码失效）
+  完整覆盖 —— T2 **不重复**，只断言 **200**。判据见 **E 的分工原则**。
+  ⚠️ 注意 doc 原来写的是"200 **且新密码可登录**"，那是**手动走查**的写法（想当场看到效果）；落成自动化测试时按层切开。
+
+**关键澄清：一个测试 ≠ 一个请求。** `test_delete_me_then_404` 天生要两个请求（DELETE 完再打一次）；
+若把"新密码可登录"也放进 `test_change_pwd_ok`，它同样算一条。规则是「**一个测试 = 一个失败理由（一个行为）**」，不是「一个请求」。
+
+**setup helper 的形状**（放 `tests/common/mod.rs`，三条注意）：
+
+```rust
+pub async fn register_and_login(state: &AppState, email: &str) -> (i64, String)
+// 内部走真实 HTTP：POST /auth/register → POST /auth/login → (user_id, token)
+```
+
+① 文件顶部加 `#![allow(dead_code)]`（`tests/` 下**每个文件各自编译**，用不到 helper 的那个二进制会报 unused）；
+② helper **必须接收调用方的 `state`**，**不要自己造 pool** —— 否则同一测试的第二个请求会换一个库（玄学失败）；
+③ 走真实 HTTP 的取舍 = 更真实但与注册/登录耦合（对照 **D 第 3 问**）。
+
+**唯一合理的长链用例**：额外写**一条 E2E 冒烟测试**（happy path 全流程 `register→login→patch→password→delete`），
+专门抓"集成意外"，是上面 4 条**之外**的第 5 条、**不替代**它们。learning 项目里可选。
+
 **D. 要自己答的 6 个问题（答完再动手）**
 
 1. `AppState` 的四个字段（`pool` / `access_ttl` / `encoding_key` / `decoding_key`），测试里各自**从哪来**？有没有现成的构造函数可以复用，还是得自己 `EncodingKey::from_secret(…)`？
@@ -1100,7 +1140,8 @@ V3  继续长
      `sql.rs` 补上 `ORDER BY id`；`UserResponse` 已含 `role`。**分页暂缓**（3.4）
    - **f. 熟悉代码清单** —— **本阶段正事，见下方 6f**
 7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径 —— **前置全就位**（lib.rs ✅ / `tower` ✅ 已在 `[dev-dependencies]`）。
-   📋 **执行清单见 §4.9**（2026-10-12 定案：只给问题不给答案，含 11 步请求顺序 + 要自答的 6 个问题 + 3 个坑）。
+   📋 **执行清单见 §4.9**（2026-10-12 定案：只给问题不给答案，含 11 步请求顺序 + 要自答的 6 个问题 + 3 个坑）；
+   另含 **C.1 手工走查链 → 测试的拆分模型**（2026-10-13：链 → setup + 独立测试）。
    现状 ⬜ **未开始**（§3.4 里 T2 不在暂缓表内，只是排在 6f 之后）。
 8. `git commit` 收尾 → 开新仓库做 Agent 的 V0
 
@@ -1154,6 +1195,10 @@ register → login → PATCH /me（只改 name，email/message 不变）
         → PUT /me/password（旧密码错 → 401；旧密码对 → 200 且新密码可登录）
         → DELETE /me（带旧 token 再访问 → 404 —— "注销后靠查库兜底"的现场验证）
 ```
+
+> **⚠️ 别把这条链整条写进一条测试** —— 它是**手动走查脚本**，不是测试设计。
+> 落成自动化测试的**拆分模型见 §4.9·C.1**（链 → setup + 独立测试，2026-10-13 定案）。
+> 另：第 8 条那句"且新密码可登录"已被 T1 覆盖，T2 不重复（同 C.1）。
 
 **D. 顺手清理（两处，其中一处已完成）**
 
