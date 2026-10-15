@@ -1,12 +1,22 @@
 # rust_learn_my_api 鉴权改造 —— 进度记录、Review 与后续路线
 
-> 记录时间：2026-09-30　最近更新：2026-10-12
+> 记录时间：2026-09-30　最近更新：2026-10-15
 > 代码由本人手动修改；本文件为进度文档的唯一维护源，由 AI 直接更新（工作区旧副本已废弃）
 > 前置：已完成 rustlings，按 plan.md 学习 axum web api；本次为 JWT 鉴权 + auth 体系改造
 
 ---
 
-## 〇、当前状态速览（2026-10-12 更新）
+## 〇、当前状态速览（2026-10-15 更新）
+
+> ### ✅ 项目状态：已收工（2026-10-15）
+> 按 **3.1** 的收手标准（"把 axum 核心概念各用一遍 + 用 Rust 写一遍类型/所有权密集的代码"）核查：
+> **已达标，并超出原定标准** ——
+> - §3.1 原定两块（**测试 T0/T1**、**admin + role**）→ 全部完成；
+> - **计划外的 T2 HTTP 层测试** → 也已完成（**17 条集成测试全绿**，`cargo test` → 21 + 17 = **38 passed**）；
+> - **唯一的挂账 `seeds/00_admin.sql` → 已用等价方式结清**（方案 2，见 **3.3⑤ A** / **九·6b**）。
+>
+> 功能面自 2026-10-11 起**冻结**（**3.4**），剩余项全部转为"暂缓"（提权端点、分页、中间件生态），各有触发条件。
+> **下一站 = 第五章 Rust Coding Agent。**
 
 - 鉴权改造已于 09-30 完成并通过 review，已提交：
   - `d90abc2 基本完成鉴权部分的改造`
@@ -30,7 +40,7 @@
   - ✅ **已提交（2026-10-10 / commit `f201924 完成遗漏的测试`，其前 `f35288d`）**，工作树干净 —— T1 基线可回退。
 - **admin + role 的设计已定案（2026-10-10）**：**不做"两个注册端点"**。公开注册永远只产 `user`
   （现状已正确：`UserRegister` 无 `role` 字段、`create_user` 的 INSERT 不带 role），admin 由
-  「**自举 seed（首个）+ `require_admin` 保护的提权端点（后续）**」产生。详见 **3.3**。
+  「**自举（首个；实走"注册 + `sqlite3 UPDATE`"，见 3.3⑤ A）+ `require_admin` 保护的提权端点（后续，暂缓）**」产生。详见 **3.3**。
 - **role 的类型已定案（2026-10-10）**：DB/JSON 两端是字符串，Rust 内部用 **`enum Role { User, Admin }`**（不用 `String`）；
   落地时 **`query_as!` 必须写列类型注解 `role as "role: Role"`**，否则报 `Role: From<String>`。详见 **3.3⑦⑧**。
 - **T2 前置（lib.rs）已完成并提交（2026-10-10 / commit `6f7c776 设置lib.rs管理mod`）**：新增 `src/lib.rs`
@@ -47,11 +57,11 @@
 - **✅ admin 链已实测跑通（2026-10-12）—— 原"唯一实质缺口"闭合**：`data/users.db` 造出 `root@local`(admin) /
   `alice@local`(user) 两个账号后，一次性打通 `401 / 403 / 200` 三态，并**现场撞到** 3.3⑥ 那条不一致窗口
   （提权后旧 token 仍 403、降权后旧 token 仍 200）。完整证据链见 **九·6f·A / 6f·B**。
-- **T2 执行清单已就绪（2026-10-12）**：**0 起步引导**（目录模型 / 一次请求四步骨架 / "只写一条"的渐进路径）
+- **T2 执行清单（2026-10-12 就绪 → 2026-10-15 执行完毕）**：**0 起步引导**（目录模型 / 一次请求四步骨架 / "只写一条"的渐进路径）
   + 11 步请求顺序 + **手工走查链 → 测试的拆分模型（C.1，2026-10-13）** + **helper 三层 + 两种身份（C.2，2026-10-14）**
   + 要自答的 6 个问题 + 3 个坑 + 真实度光谱，已定案并写入 **§4.9**（只给问题不给答案）。
   前置全就位：`lib.rs` ✅、`tower` ✅ 已在 `[dev-dependencies]`。
-- **✅ T2 已基本完成（2026-10-15 实测）**：`tests/` 已建，**17 条集成测试全绿**（`cargo test` → 21 单元 + 17 集成 = **38 passed**，零 warning）。
+- **✅ T2 已完成（2026-10-15 实测）**：`tests/` 已建，**17 条集成测试全绿**（`cargo test` → 21 单元 + 17 集成 = **38 passed**，零 warning）。
   §4.9·C 的 11 步**全部覆盖**：`/health` · `/me` 无 token→**401** · register **201**+字段 · 同邮箱→**409** ·
   缺字段→**422** / 空体→**400** · login 成功 / 失败→**401** · admin 链 **401 → 403 → 200** ·
   **`GET /admin/others` → 404**（6f·B 那第三条，终于补上）· 匿名字段裁剪 · `/me` 的 GET/PATCH ·
@@ -63,9 +73,11 @@
   它对该观看者**无任何用途**，违反本项目已定下的"端点返回类型 = 观看者有权看到的字段集合"。
   **已从该 DTO 移出**（`models.rs` 删字段 + 删 `From` 里那一行；`cargo test` → **21 绿 / 零告警 / 测试零改动**）。
   详见 **3.3⑨ / 遗留点 8**。
-- **结论：核心目标已达成**——axum 核心概念（提取器 / 路由 / 中间件 / `Layer` / 状态 / 错误映射）已各用一遍。
-  剩余项（seeds 自举、提权端点、分页、**中间件生态**）已于 2026-10-11 **定案为"暂缓"**，理由与触发条件见 **3.4**。
-  （**T2 原也在此列，已于 2026-10-15 完成** —— 17 条集成测试全绿，见 **4.9** / 上一条。）
+- **✅ 结论：项目已收工（2026-10-15）** —— axum 核心概念（提取器 / 路由 / 中间件 / `Layer` / 状态 / 错误映射）已各用一遍；
+  §3.1 原定的两块（测试 T0/T1、admin + role）全部完成，**计划外的 T2 也已完成**（17 条集成全绿，见 **4.9**）。
+  功能面自 2026-10-11 冻结（**3.4**）；剩余项只剩"暂缓"（提权端点、分页、中间件生态），各有触发条件。
+  **`seeds/00_admin.sql` 一项已用等价方式结清**（方案 2：注册 + `sqlite3 UPDATE`，见 **3.3⑤ A** / **九·6b**）—— 不再挂账。
+  **下一步：第五章 Rust Coding Agent。**
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
 ---
@@ -212,10 +224,11 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 ### 验收清单（改动后手动跑一遍）
 
-> **状态：10-09 已部分跑通（用临时库 / 端口 3011）。** 4.7① 的 feature 缺陷已于 10-08 修复，
-> 第 **1-6 条**已实测通过（`register → login → /me`，**`login` 首次真正执行**；`/users/{id}` 匿名返回 3 字段、`/me` 带 token 返回 4 字段）。
-> **第 7-9 条**（`PATCH /me`、`PUT /me/password`、`DELETE /me` 的 HTTP 层行为）**尚未手动跑**——
-> 其服务层逻辑已被 T1 覆盖（见 4.5），HTTP 层留到 T2 一起测。
+> **状态：第 1-9 条全部已完成。** 10-09 已跑通第 **1-6 条**（用临时库 / 端口 3011；`register → login → /me`，
+> `login` 首次真正执行；`/users/{id}` 匿名返回 3 字段、`/me` 带 token 返回 4 字段）。
+> **第 7-9 条**（`PATCH /me`、`PUT /me/password`、`DELETE /me` 的 HTTP 层行为）**已于 2026-10-15 由 T2 完成**
+> （其服务层逻辑此前已由 T1 覆盖，见 4.5）—— 落地为 `test_patch_me_name_only` / `test_change_pwd_wrong_old` /
+> `test_change_pwd_success` / `test_delete_me_then_404` 四条，见 **6f·C**。
 
 ```
 1. POST /auth/register            → 201，返回用户 JSON（无 password_hash 字段）
@@ -231,19 +244,21 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 ---
 
-## 三、当前项目的收手标准（2026-10-07）
+## 三、当前项目的收手标准（2026-10-07 定；**2026-10-15 已达标收工**）
 
 ### 3.1 判断标准
 
 这个项目的使命不是"做完一个生产级后端"，而是：**把 axum 的核心概念各用一遍 + 用 Rust 写一遍类型/所有权密集的代码**。
 
-按这个标准盘点，axum 版图里只剩**两块没碰到**，做完就可以收手：
+按这个标准盘点（**2026-10-07 时**），axum 版图里只剩**两块没碰到**，做完就可以收手 —— **两块已于 2026-10-15 全部完成**：
 
-| 收尾项 | 为什么值得做 | 会练到 |
-|---|---|---|
-| **测试（T0/T1）**（先做） | 为接下来的 admin 改造提供安全网；逼出 `get_me` 的分层问题；兑现窄依赖红利 | `#[sqlx::test]`、真实库测试、断言行为而非实现 |
-| **admin + role**（后做） | 中间件 / `tower::Layer` 是唯一还没碰的 axum 核心概念（**设计决策见 3.3，2026-10-10 定案**） | `Router::nest` + `layer`、`403`、增量迁移、role 写进 Claims 的权衡 |
-| refresh token（可选） | 业务设计题而非语言题，但能练状态设计与迁移 | token 版本号 / 黑名单、token 轮换 |
+| 收尾项 | 为什么值得做 | 会练到 | 状态（2026-10-15） |
+|---|---|---|---|
+| **测试（T0/T1）**（先做） | 为接下来的 admin 改造提供安全网；逼出 `get_me` 的分层问题；兑现窄依赖红利 | `#[sqlx::test]`、真实库测试、断言行为而非实现 | ✅ **12 + 21 全绿** |
+| **admin + role**（后做） | 中间件 / `tower::Layer` 是唯一还没碰的 axum 核心概念（**设计决策见 3.3，2026-10-10 定案**） | `Router::nest` + `layer`、`403`、增量迁移、role 写进 Claims 的权衡 | ✅ **已完成**（`6626125`） |
+| refresh token（可选） | 业务设计题而非语言题，但能练状态设计与迁移 | token 版本号 / 黑名单、token 轮换 | ⏸ **暂缓**（触发条件见 3.4） |
+
+> **另有计划外的一项**：**T2 HTTP 层测试**（§4.9 途中追加）也已于 2026-10-15 完成（17 条集成全绿）—— 原表未列，属**超标准**完成。
 
 ### 3.2 建议降级或跳过
 
@@ -302,11 +317,13 @@ error.rs   → ApiError（含 Conflict/Password 等）+ IntoResponse 统一映�
 
 | 路径 | 内容 | 判断 |
 |---|---|---|
-| **A 自举首个 admin** | seed 脚本 `INSERT ... role='admin'`，手动跑一次（`sqlite3 data/users.db < seeds/00_admin.sql`） | **必做** —— 清楚表达"bootstrap 是运维动作，不是 API" |
-| **B 提权** | `PATCH /admin/users/{id}/role` + `require_admin` 中间件 | **可选但值得** —— admin 里程碑里唯一能用上中间件的**写**路径，比只做 `GET /admin/users` 更能练到 `Layer` |
+| **A 自举首个 admin** | seed 脚本 `INSERT ... role='admin'`，手动跑一次（`sqlite3 data/users.db < seeds/00_admin.sql`） | ✅ **结论（2026-10-15）：已用等价方式完成** —— 实跑改走**方案 2**（`POST /auth/register` 注册 + `sqlite3 UPDATE ... SET role='admin'` 提权），admin 链由此被完整验证（6f·A/B/C + T2 17 条）。`seeds/` 文件**未落地、也不再落**，语义等价（原文即注明"二者等价"）。**不挂账** |
+| **B 提权** | `PATCH /admin/users/{id}/role` + `require_admin` 中间件 | **可选但值得** —— admin 里程碑里唯一能用上中间件的**写**路径，比只做 `GET /admin/users` 更能练到 `Layer`（→ 2026-10-11 按 **3.4** 定案**暂缓**，不阻塞收工） |
 | **C `POST /admin/users`**（admin 代建账号） | admin 创建用户 | **跳过** —— 价值与 B 重叠，还会引入"初始密码怎么给"等额外问题，超出收手标准 |
 
-> env 驱动启动自举（`ADMIN_EMAIL` 存在且无 admin 则创建）更"生产"，但对学习项目过度设计 —— 用 seed 文件即可。
+> env 驱动启动自举（`ADMIN_EMAIL` 存在且无 admin 则创建）更"生产"，但对学习项目过度设计 —— seed 文件即可。
+> **本项目的实际选择**：连 seed 文件也没落，直接走"注册 + `sqlite3 UPDATE`"（方案 2，见 **九·6f 前置**）；
+> 原因是方案 2 免去手写 `password_hash`，而验证 admin 链的效果完全等价。
 
 #### ⑥ ⚠️ 必须提前知道的坑：role 放进 Claims 之后
 
@@ -494,12 +511,19 @@ sqlx::query_as::<_, UserEntity>("SELECT id, role, name, email, password_hash, me
 | 暂缓项 | 触发条件 |
 |---|---|
 | 中间件生态（体大小限制 / trace / CORS / 限流） | 服务真的对外、或有前端要接、或开始担心被打 |
-| `seeds/00_admin.sql`（3.3⑤ A） | **不算暂缓** —— 见九·6f：不写它，admin 链就没有可执行的起点（也可临时用 `sqlite3 UPDATE` 代替，二者等价） |
+| ~~`seeds/00_admin.sql`（3.3⑤ A）~~ | ✅ **已结清（2026-10-15），不再是待办** —— admin 链的可执行起点由**方案 2**（注册 + `sqlite3 UPDATE`）提供并已实测跑通，两者语义等价（见 **3.3⑤ A** / **九·6b**）。**不建 `seeds/` 目录**；将来若要落地文件，按 3.3⑤ A 原样写即可 |
 | `PATCH /admin/users/{id}/role`（3.3⑤ B） | 想再练一次"用中间件的**写**路径"时 |
 | 分页 / `QueryBuilder` 动态 SQL | 有真实数据量时 |
 | refresh token / 黑名单 | 真需要"注销即时生效"时 |
 
 > 一句话：**这个项目作为"资产"冻结在这里**，不再为它加功能；有实际需要（或换个方向做 Agent）时，它会被直接复用而不是被续写。
+
+**✅ 结果复盘（2026-10-15）—— 收手决定被验证是对的：**
+
+距定案 4 天，按 **3.1** 标准重新盘账：原定两块（T0/T1 + admin/role）全部完成，**另多做了计划外的 T2**（17 条集成全绿）；
+唯一的挂账 `seeds` 也已用等价方式结清（见上表）。这 4 天里**没有一项新增功能**，全部是"补测试 / 实跑验证 / 回读代码"——
+正是收手决定所指向的方向。**故正式收工**：此后每多伸手一次，都会落回第 2 条（"加中间件 = 查文档的活"）。
+**下一站见第五章。**
 
 ---
 
@@ -1068,6 +1092,9 @@ pub async fn register_and_login(state: &AppState, email: &str) -> (i64, String)
 
 ## 五、下一个项目：Rust Coding Agent（2026-10-07 定案）
 
+> **▶ 当前起点（2026-10-15）**：本项目已收工（见 **§〇** / **3.4** 结果复盘），**这里就是下一步**。
+> 开新仓库；前置能力（Axum / SQLx / 鉴权 / 分层 / 测试）可直接复用。V0→V3 落地路线见 **第六章**。
+
 ### 5.1 结论
 
 **采纳"做 Agent"这条路线，但附加三个限定条件**：不用现成 Agent 框架、先做非流式 + CLI、在隔离目录里跑。
@@ -1255,6 +1282,7 @@ V3  继续长
    工作树已干净。顺手可把哨兵处重复的 `update_pwd_1` / `pwd_res1` 改成不同名字（非必须）。
 4. **补跑第二节验收清单**：10-09 已跑通第 1-6 条（`login` 首次真正执行）；**第 7-9 条**（PATCH / PUT password / DELETE 的 HTTP 层）留到 T2 一起。
    - **2026-10-12 更新**：另已补跑 **admin 链的三态 + 提权/降权窗口**（见 **6f·A/B**）—— 第 7-9 条仍留 T2。
+   - ✅ **2026-10-15 全部完成**：第 7-9 条由 T2 落地（`test_patch_me_name_only` / `test_change_pwd_wrong_old` / `test_change_pwd_success` / `test_delete_me_then_404`）。
 5. **T2 前置 —— ✅ `src/lib.rs` 已完成并提交（2026-10-10 / commit `6f7c776`）**：10 个 `pub mod` + `pub fn app(state) -> Router`，
    `main.rs` 变薄壳（**零 `mod` 声明**，改用 `use my_api::...`）；`cargo test` 仍 21 绿。
    - ⚠️ 坑：`main.rs` 若保留 `mod` 声明 → **crate 双编译 + 两份同名类型互不相等**（详见 **4.3** / 第八节）。
@@ -1264,16 +1292,19 @@ V3  继续长
 6. **admin + role**（设计已定案，见 **3.3**）—— ✅ **主体已完成（2026-10-11 / commit `6626125`）**，余项按 **3.4** 定案暂缓：
    - **a. ✅ 已完成**：迁移加 `role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))`；`Role` enum（3.3⑦）；`UserEntity` / `UserResponse` /
      `PublicUserResponse` 加 `role`；**三处** SELECT 加类型注解 `role as "role: Role"`（3.3⑧）。
-   - **b. ⬜ `seeds/00_admin.sql` 自举首个 admin** —— **仍建议做（成本 = 4 行 SQL）**：不写它，admin 链就没有可执行的起点
-     （也可临时用 `sqlite3 UPDATE` 代替，见 **6f** 前置）。⚠️ **注册端点不动，永远产 user**（`UserRegister` 不加 `role` 字段）
-     - **2026-10-12 现状**：6f 实跑走的是**方案 2**（注册 + `sqlite3 UPDATE`），`seeds/` 目录**仍未建**；方案 2 足以验证链，但"bootstrap 是运维动作"这层语义还没落成文件
+   - **b. ✅ 已用等价方式结清（2026-10-15 定案）**：`seeds/00_admin.sql` **文件未落地，也不再落** ——
+     实跑改走**方案 2**（`POST /auth/register` 注册 + `sqlite3 UPDATE users SET role='admin'` 提权），
+     admin 链的可执行起点由此提供并**已完整验证**（6f·A/B/C 全绿 + T2 17 条）。
+     两者语义等价（**3.3⑤ A** 原文即注明"也可临时用 `sqlite3 UPDATE` 代替，二者等价"）→ **不挂账**；
+     将来要落成文件的做法见 **6f 前置**（方案 1）。
+     ⚠️ **注册端点不动，永远产 user**（`UserRegister` 不加 `role` 字段）
    - **c. ✅ 已完成**：**Claims 加 `role`**（`jwt.rs`：`pub role: Role`；`sign` / `new` 签名随之改、`login` 传 `&user.role`）+
      **`require_admin` 中间件**（`middleware.rs`，`match user.role` 穷尽匹配）+ **`Router::nest("/admin")` + `route_layer`**（`lib.rs`）
      → **`403` 已登场**。接受"角色变更不即时生效"，见 **3.3⑥**
    - **d. ⬜ 提权端点 `PATCH /admin/users/{id}/role`** —— **暂缓**（"再练一次写路径"的可选项，触发条件见 3.4）
    - **e. ✅ 已完成（不含分页）**：`get_all_users` 已复活并接到 **`GET /admin/users`**（**遗留点 4 收尾**），
      `sql.rs` 补上 `ORDER BY id`；`UserResponse` 已含 `role`。**分页暂缓**（3.4）
-   - **f. 熟悉代码清单** —— **本阶段正事，见下方 6f**
+   - **f. ✅ 熟悉代码清单已执行完毕（2026-10-12 → 10-15）** —— 见下方 **6f**（A/B/C 全绿 + D 清理完成 + E 读代码姿势）
 7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径 —— **前置全就位**（lib.rs ✅ / `tower` ✅ 已在 `[dev-dependencies]`）。
    📋 **执行清单见 §4.9**（2026-10-12 定案：只给问题不给答案，含 11 步请求顺序 + 要自答的 6 个问题 + 3 个坑）；
    另含 **B.1 请求/响应两端编解码**（2026-10-13：`.body()` 的 `&'static str` 限制 / 缺 `content-type` → 415 /
@@ -1286,7 +1317,8 @@ V3  继续长
   ① `test_delete_me_then_404` 的登录邮箱写错导致**断言恒真** → 已改对；
   ② 补上"注销后**旧 token** 再打 `/me` → 404"（"靠查库兜底"的直接证据）；
   ③ `test_change_pwd_success` 末尾多余的 `login_ok`（"新密码可登录"按 C.1 归 T1）→ 已删。
-8. `git commit` 收尾 → 开新仓库做 Agent 的 V0
+8. ✅ **本项目收尾（2026-10-15）** —— `git commit` 结账已完成（最新 `1d8bed1 更新计划中的所有集成测试`，工作树干净）。
+   **→ 下一站：开新仓库做 Agent 的 V0**（路线见 **第五章** / **第六章**）。
 
 ### 6f. 熟悉代码清单（2026-10-11 起 —— 本阶段的正事）
 
@@ -1297,20 +1329,23 @@ V3  继续长
 > 10-12 手动走查完成 A/B（造账号走**方案 2**：先 `POST /auth/register` 再 `sqlite3 UPDATE` 提权；服务端口 `3000`；
 > 库内留下 `1 root@local admin` / `2 alice@local user` 作 403 素材）；
 > 10-15 由 **T2** 补完 C 与 B 第三条（**`test_admin_other` → 404**，见 §4.9·C 第 10 步 / §4.9·C.2 现状）。
+> 造 admin 的**方案 2 亦经 T2 复用**（`tests/common/mod.rs::update_admin_email` 走的就是"注册后 UPDATE"同一条思路）。
+> ✅ **`seeds/00_admin.sql` 已于 2026-10-15 结清**（不落地文件，方案 2 语义等价）—— 见下方前置块与 **九·6b**。
 
-**前置：先造出一个 admin（二选一）**
+**前置：先造出一个 admin**
 
 ```sql
--- 方案 1（推荐）：写进 seeds/00_admin.sql，手动执行一次
---   表达"bootstrap 是运维动作，不是 API"（3.3⑤ A）
-INSERT INTO users (role, name, email, password_hash) VALUES ('admin','root','admin@example.com','<argon2 PHC 串>');
-
--- 方案 2（临时）：先正常 POST /auth/register 注册，再直接提权
+-- ★ 本项目实际采用（2026-10-12 手动走查 + 10-15 T2 均如此）—— 方案 2：先注册再提权
+--   优点：无需手写 PHC 串（注册端点替你哈希），一条 UPDATE 搞定
 UPDATE users SET role='admin' WHERE email='你的邮箱';
+
+-- 备选（本项目未落地文件，但语义等价 —— 见 3.3⑤ A / 九·6b）—— 方案 1：写进 seeds/00_admin.sql
+--   表达"bootstrap 是运维动作，不是 API"
+INSERT INTO users (role, name, email, password_hash) VALUES ('admin','root','admin@example.com','<argon2 PHC 串>');
 ```
 
-> ⚠️ **`password_hash` 不能手写明文**：要 PHC 串（`$argon2...`）。最省事的是走方案 2（注册端点会替你哈希），
-> 或者从测试里借 `hash_password` 生成一个再填进 seed。
+> ⚠️ **`password_hash` 不能手写明文**：要 PHC 串（`$argon2...`）。所以**方案 2 更省事**（注册端点会替你哈希）——
+> 这正是本项目采用它的原因。若要走方案 1，需先从测试里借 `hash_password` 生成一个串再填进 seed。
 
 **A. ✅ 已完成（2026-10-12）：`/admin/users` 的三态**
 
