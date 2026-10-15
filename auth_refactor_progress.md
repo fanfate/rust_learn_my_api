@@ -48,16 +48,24 @@
   `alice@local`(user) 两个账号后，一次性打通 `401 / 403 / 200` 三态，并**现场撞到** 3.3⑥ 那条不一致窗口
   （提权后旧 token 仍 403、降权后旧 token 仍 200）。完整证据链见 **九·6f·A / 6f·B**。
 - **T2 执行清单已就绪（2026-10-12）**：**0 起步引导**（目录模型 / 一次请求四步骨架 / "只写一条"的渐进路径）
-  + 11 步请求顺序 + **手工走查链 → 测试的拆分模型（C.1，2026-10-13）** + 要自答的 6 个问题 + 3 个坑 + 真实度光谱，
-  已定案并写入 **§4.9**（只给问题不给答案）。
-  前置全就位：`lib.rs` ✅、`tower` ✅ 已在 `[dev-dependencies]`。**下一步就是动手。**
+  + 11 步请求顺序 + **手工走查链 → 测试的拆分模型（C.1，2026-10-13）** + **helper 三层 + 两种身份（C.2，2026-10-14）**
+  + 要自答的 6 个问题 + 3 个坑 + 真实度光谱，已定案并写入 **§4.9**（只给问题不给答案）。
+  前置全就位：`lib.rs` ✅、`tower` ✅ 已在 `[dev-dependencies]`。
+- **✅ T2 已基本完成（2026-10-15 实测）**：`tests/` 已建，**17 条集成测试全绿**（`cargo test` → 21 单元 + 17 集成 = **38 passed**，零 warning）。
+  §4.9·C 的 11 步**全部覆盖**：`/health` · `/me` 无 token→**401** · register **201**+字段 · 同邮箱→**409** ·
+  缺字段→**422** / 空体→**400** · login 成功 / 失败→**401** · admin 链 **401 → 403 → 200** ·
+  **`GET /admin/others` → 404**（6f·B 那第三条，终于补上）· 匿名字段裁剪 · `/me` 的 GET/PATCH ·
+  `PUT /me/password` **401 / 200** · `DELETE /me` → 404。
+  helper 已按 §4.9·C.2 分三层（L0 `test_state` / L1 `send -> (StatusCode, Bytes)` / L2 `register_ok`·`login_ok`）。
+  **三处初版弱断言（恒真断言 / 漏"旧 token 查库兜底" / 重复测 T1 的东西）同日均已修正** —— 详见 **§4.9·C.2 的「📌 现状」**。
 - **公开端点的 `role` 暴露 —— ✅ 已移出（2026-10-12）**：匿名可访问的 `GET /users/{id}` 返回的
   `PublicUserResponse` 原**含 `role`** → 扫一遍 id 即得"谁是 admin"、且将来新增内部角色会**自动出现在公开端点**。
   它对该观看者**无任何用途**，违反本项目已定下的"端点返回类型 = 观看者有权看到的字段集合"。
   **已从该 DTO 移出**（`models.rs` 删字段 + 删 `From` 里那一行；`cargo test` → **21 绿 / 零告警 / 测试零改动**）。
   详见 **3.3⑨ / 遗留点 8**。
 - **结论：核心目标已达成**——axum 核心概念（提取器 / 路由 / 中间件 / `Layer` / 状态 / 错误映射）已各用一遍。
-  剩余项（seeds 自举、提权端点、T2、分页、**中间件生态**）已于 2026-10-11 **定案为"暂缓"**，理由与触发条件见 **3.4**。
+  剩余项（seeds 自举、提权端点、分页、**中间件生态**）已于 2026-10-11 **定案为"暂缓"**，理由与触发条件见 **3.4**。
+  （**T2 原也在此列，已于 2026-10-15 完成** —— 17 条集成测试全绿，见 **4.9** / 上一条。）
 - **收尾顺序已定案（2026-10-07，未变）：先写测试（T0/T1），再做 admin + role。** 理由见第四节。
 
 ---
@@ -513,7 +521,7 @@ sqlx::query_as::<_, UserEntity>("SELECT id, role, name, email, password_hash, me
 | **T0 纯函数单测** | `hash_password` / `verify_password`、`jwt::sign` / `validate` | 半小时 | ✅ **完成 2026-10-08（12 条全绿）** |
 | **T1 服务层测试**（连真实库） | `auth::register` / `login` / `update_me` / `delete_me` / `update_password_me` 的业务规则 | 半天 | ✅ **完成 2026-10-10（8 条，共 21 全绿）** |
 | admin + role | 角色迁移、中间件、403 | 1-2 天 | 🔄 **进行中 2026-10-10**（迁移 ✅ / `Role` enum ✅ / Claims ✅ / 中间件待写） |
-| **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | ⬜ **未开始**（前置全就位：lib.rs ✅ / `tower` ✅ 已在 `[dev-dependencies]`）—— 清单见 **4.9** |
+| **T2 HTTP 层测试**（Router + 请求） | 状态码映射、`CurrentUser` 提取、401/403、`From` 裁剪 | 半天 | ✅ **已完成**（2026-10-15：17 条全绿，21+17=38 passed）—— 清单见 **4.9** |
 
 T2 放后面的实际原因：**403 需要 admin 路由存在才测得了**，而 T1 已能覆盖绝大部分业务逻辑。
 
@@ -859,6 +867,33 @@ let resp = router.oneshot(request).await.unwrap();
 **可见性约束**：只能访问 `pub` 项 → **摸不到 `UserRegister.password`**（§4.4 那条约束会在这里真的挡你一下）。
 ⚠️ 两个已确认的坑：`oneshot` **消费 `self`**（一个 `Router` 只能发一个请求）；**不要叠 `#[tokio::test]`**（`#[sqlx::test]` 自带运行时，§4.3）。
 
+**B.1 请求 / 响应两端的编解码（2026-10-13 补充）**
+
+**请求侧：JSON 怎么塞进 `.body()`**
+
+- `axum::body::Body` 的 `From` 实现（已核实 `axum-core-0.5.6/src/body.rs:103-110`）：
+  `&'static str` / `Cow<'static, str>` / `String` / `Vec<u8>` / `&'static [u8]` / `Cow<'static, [u8]>` / `Bytes`。
+  → 字面量 `r#"{"…"}"#`（`&'static str`）可**直接**塞；**运行期 `&str` 不行**（只实现了 `'static` 版，借用无法延长寿命）
+  → 动态内容必须交出所有权（`String`：`format!` / `json!(…).to_string()`）。
+- ⚠️ **必须带 `content-type: application/json`** —— `Json` 提取器先查它（`json.rs:107`），不合格直接 **415**
+  （`MissingJsonContentType` → `UNSUPPORTED_MEDIA_TYPE`，`extract/rejection.rs:39`）。接受 `application/json`（可带 charset）
+  与 `application/*+json`；**`text/json` 不行**（type 必须是 `application`）。
+- **T2 不构造 `UserRegister`** —— 它是**接收端 DTO**，服务端由 serde 构造；只有 T1（同 crate、直接调 `auth::register`）才需要构造它。
+  → **别为测试加 `Default` / `new` / `pub`**（理由同 §4.9·C.1 那条判断：私有字段是信号，不是障碍）。
+
+**响应侧：body 怎么取值**
+
+- `to_bytes(resp.into_body(), usize::MAX)` → `Bytes`；`serde_json::from_slice(&bytes)` **直接吃 `&[u8]`**，
+  **不需要先转成 `str`**（真想拿 `&str` 才用 `std::str::from_utf8(&bytes)`）。
+- ⚠️ **本项目的响应 DTO 没有 `Deserialize`** —— `LoginResponse` / `UserResponse` 都是**只 derive `Serialize`**（`models.rs`），
+  所以测试里**不能**写 `from_slice::<my_api::models::LoginResponse>(…)`（即便类型是 `pub` 可命名）。改走两条：
+  ① `serde_json::Value` 索引（`v["data"]["token"]` / `v["data"]["user"]["id"]`）；
+  ② 测试侧本地 `#[derive(Deserialize)]` 结构体 —— **只声明要用的字段即可**（serde 默认**忽略多余字段**，`code`/`message`/`role`… 不写也行）。
+- 信封形状：`{ code, message, data }`（`response.rs`）；**错误响应 `data = null`**（`error()` 里 `data: None`）。
+- 两个顺序 / 取值坑：① **`resp.status()` 必须早于 `resp.into_body()`**（`into_body` 消费 `resp`，之后拿不到状态码）；
+  ② `Value` 用 `v["a"]["b"]` 索引**缺 key 返回 `Null`、不 panic**，`.as_str()` / `.as_i64()` 给 `None`
+  → 用 `.expect("响应缺 data.token")` 才分得清是"信封形状不对"还是别的问题。
+
 **C. 建议顺序（从简到繁，每步只验证一层）**
 
 | # | 请求 | 期望 | 这一步在验证什么 |
@@ -874,6 +909,13 @@ let resp = router.oneshot(request).await.unwrap();
 | 9 | admin token → `GET /admin/users` | **200** | 两层都过 + `get_all_users` 接线 |
 | 10 | `GET /admin/xxx`（不存在） | **404，而非 401/403** | `route_layer` **只作用于已匹配的路由**（即 6f·B 那第三条，一直没跑） |
 | 11 | 匿名 `GET /users/{id}` | 200 且 body **无 `email` / 无 `role`** | **字段裁剪** —— T1 永远测不到的那条 |
+
+> ⚠️ **第 8 / 9 步的隐藏前提（2026-10-15 实测撞到）**：`#[sqlx::test]` 给的是全新空库、注册端点**永远产 user**，
+> 所以 **admin 得自己造**；而造它有**两种时序** —— token 在**签发那一刻**就把 `role` 写进了 claims（`auth.rs:119` `jwt::sign(user.id, &user.role, …)`）：
+> - **A（先提权、后登录）**：`register` → `UPDATE users SET role='admin'` → `login` → 拿到的 token 里 role **已是 admin** ✅
+> - **B（先登录、后提权）**：`register` → `login` → `UPDATE … role='admin'` → **旧 token 里仍是 `user` → 403**（必须重登换新 token）
+>
+> **B 就是 3.3⑥ / 6f·B 那条 ★「提权不即时生效」在自动化测试里的复现** —— 手动走查撞过一次，写测试时又撞一次。
 
 **C.1 手工走查链 → 测试的拆分模型（2026-10-13 定案）**
 
@@ -913,6 +955,89 @@ pub async fn register_and_login(state: &AppState, email: &str) -> (i64, String)
 
 **唯一合理的长链用例**：额外写**一条 E2E 冒烟测试**（happy path 全流程 `register→login→patch→password→delete`），
 专门抓"集成意外"，是上面 4 条**之外**的第 5 条、**不替代**它们。learning 项目里可选。
+
+**C.2 helper 分层：三层 + 两种身份（2026-10-14 定案）**
+
+"要不要抽 helper"的答案不是"要 / 不要"，而是**按职责分层抽**。判据只有一个：**第二个调用者出现了吗？**
+
+§4.9·C 的 11 步里，有一批调用者**只需要 register、不要 token**：
+
+| 步骤 | 需要的 |
+|---|---|
+| 5 · 同邮箱再注册 → 409 | **register-only**（第二次注册**本身就是被测对象**） |
+| 7 · login 密码错 → 401 | **register-only**（要先有用户，但不该先成功登录） |
+| 11 · 匿名 `GET /users/{id}` | **register-only**（库里得有人） |
+
+所以"第二个调用者"已经出现 → 现在抽是**消除重复**。反过来 `patch_me` / `delete_me` / `change_password`
+**先别抽**：它们在大多数测试里**就是被测对象本身**，等真出现第二个调用者再说（早了就是过度设计）。
+
+**分层（每层只干一件事，层数 = "这一层知道多少"）：**
+
+| 层 | 签名 | 会 panic 吗 |
+|---|---|---|
+| **L2** 语义包装 | `register_ok(state, name, email, pwd)` · `login_ok(state, email, pwd) -> (i64, String)` · `register_and_login_ok(…)` | **会**（断言成功，失败即测试崩） |
+| **L1** 传输原语 | `send(&state, req) -> (StatusCode, Bytes)` | 不会（只发 + 读） |
+| **L0** 装配 | `test_state(pool) -> AppState` | 不会 |
+
+**两种身份 —— 这才是必须拆层的真正理由：** 同一个动作（比如 register）在两个测试里身份不同：
+
+- **作为 setup**（给别的测试铺路）→ 应该**断言成功、失败就 panic**，调用点才干净；
+- **作为被测对象**（步骤 5 / 7 里 register·login **自己就是主角**）→ **绝不能**走会 panic 的 L2 ——
+  否则"**409 / 401**"那条断言**永远跑不到**（helper 已经先 panic 了）。
+
+一个函数塞两种身份必然打架 → 拆层，并**在命名上带信号**：`_ok` 后缀 = "这个会断言成功"。
+将来有人拿 `register_ok` 去测 409 时，**名字会先拦他一下**。
+
+**L1 返回 `Bytes` 而不是 `Value`（2026-10-14 补充）：**
+
+一开始很自然会想把 `send` 写成 `(StatusCode, serde_json::Value)`（省得调用方再 `from_slice`）。**别这么做** ——
+判据是「**返回类型要表达"这一层知道什么"**」：
+
+- `send` 服务 **8 个 endpoint**，而返回形状**根本不统一**：`/health` 是 `{"status":"ok"}`（**连信封都不是**，
+  `handler.rs` 直接 `json!`）；`/auth/register` 是 `{code,message,data:{…}}`；错误响应信封一样但 `data: null`。
+  **L1 不承诺形状** —— 给它硬安一个具体类型 = 让它撒谎。
+- 若返回 `Value`，L2 只能 `from_slice::<Bytes>` → `Value` → **`from_value::<LoginEnvelope>`**，**解析两遍**，什么也没换来。
+- 返回 `Bytes` 时三种调用者各取所需：
+
+| 调用者 | 写法 |
+|---|---|
+| 只看状态码（409 / 404） | `let (status, _) = send(state, req).await;` |
+| 随手探查（断言"**没有** email / role"） | `let v: Value = from_slice(&bytes).unwrap();` |
+| 知道形状的 L2 | `let e: LoginEnvelope = from_slice(&bytes).unwrap();` |
+
+> `Value` 卡在中间：**比 `Bytes` 多一次解析，比 struct 少一层类型** —— 它是"我不知道形状、但想方便地乱摸"时才用的。
+> 放在 L1 会把这份模糊性**传染给所有调用者**。（想更顺手可在 `send` 旁再放一个一行的 `send_json -> (StatusCode, Value)`
+> 专供"只想 poke 一下"的测试，但**别让 typed wrapper 走它**。）
+> 附带：本项目端点全是 JSON，所以 `from_slice` 不会碰到空 body；但哪天冒出 204 / 空体端点，**raw `Bytes` 才不炸**。
+
+**一条反面提醒**：别做"万能 POST 助手"把 `content-type` 头也一并封进去 —— 那样 **"缺 content-type → 415"那条就再也测不了了**（见 B.1）。
+请求构造要么留一个**不含该头**的原始出口，要么就别封。
+
+**📌 现状（2026-10-15）—— §4.9·C 的 11 步已全覆盖，`cargo test` → 21 单元 + 17 集成 = 38 passed（零 warning）。**
+
+`tests/common/mod.rs`：L0 `test_state` / L1 `send -> (StatusCode, Bytes)` / L2 `register_ok`·`login_ok`·`register_and_login_ok`
+（`_ok` = 会断言成功），加一个测试专用 `update_admin_email(state, email)`（`sqlx::query!` 直接改库造 admin，见 C 表下方那条 ⚠️）。
+
+`tests/http.rs` **17 条**，按 C 的 11 步落成：`test_health` · `test_err_me`(401) · `test_register`(201 + 字段) ·
+`test_register_twice`(409) · `test_register_bad_syntax`(**400**) · `test_register_missing_params`(**422**) ·
+`test_login_success` · `test_login_failed`(401 × 2) · `test_admin_access_failed`(**401 → 403**) ·
+`test_admin_access_success`(**200**，走的是上面 A 时序) · `test_admin_other`(**404** —— 即 C 第 10 步 / **6f·B 那第三条**，终于补上) ·
+`test_get_user`(匿名字段裁剪) · `test_get_me_success` · `test_patch_me_name_only` · `test_change_pwd_wrong_old`(401) ·
+`test_change_pwd_success`(200) · `test_delete_me_then_404`。
+
+**三处弱断言 —— 同日均已修正（2026-10-15，复核后 38 passed 不变）**：
+1. ✅ **`test_delete_me_then_404` 的登录步骤原是恒真的**：注销后用 `email: "alice"`（正确值 `"alice@local"`）登录、断言 401 ——
+   邮箱**本来就是错的**，删没删都是 401 → **零信息量**。**已改回正确邮箱**，这条断言现在真的能抓住"注销没生效"。
+2. ✅ **补上了"注销后拿旧 token 再打 `/me` → 404"**（C.1 / 6f·C 的原意 —— "注销后靠**查库**兜底"的现场验证）：
+   旧 token **密码学上仍然有效**（`CurrentUser` 只验签、不查库），所以走到了 handler，再由 `auth::get_user` 查不到人 → **404**。
+   与原有的「登录失败 401 + **匿名** `GET /users/{id}` → 404」合起来，三种"注销后的可见后果"齐了。
+3. ✅ **`test_change_pwd_success` 末尾的 `login_ok` 已删**（原先验"新密码可登录"）—— 按 **C.1 收手**那条归 **T1**
+   （`auth.rs` 的 `test_update_password` 已覆盖），T2 只断言 **200**。
+
+**过程教训仍留在第八节**（"错误的断言 + bug 相互抵消" / "断言恒真"），别因为已修就跳过 —— 它们讲的是**怎么发现**这类问题。
+
+（另：`test_register_twice` 第一段已只断言 CREATED、去掉了抄来的 22 行，但请求仍内联 —— 可直接调 `register_ok`。）
+
 
 **D. 要自己答的 6 个问题（答完再动手）**
 
@@ -1068,6 +1193,16 @@ V3  继续长
 - **授权信息塞进凭据会引入不一致窗口**：JWT 带 `role` 后，**提权**要重登才生效（旧 token 仍是旧角色），**降权**则旧 token 仍可用直到过期 —— "免查库"的收益正是冒这个窗口的风险换来的
 - **这个不一致窗口是"可被观测"的，不只是理论**（2026-10-12 实测）：降权后拿旧 token 打 `/admin/users` 仍是 **200**，
   而**同一个响应体**里该用户的 `role` 已经显示成 `"user"` —— **授权读的是 token 里的旧值（放行），数据读的是库里的新值（已降权）**。
+- **"错误的断言 + 一个 bug 恰好相互抵消"是最危险的绿**（2026-10-15 实测）：`test_admin_access_failed` 第二段
+  用**普通用户 token** 打 `/admin/users`，期望被写成 **401**（正确行为是 **403**，`middleware.rs:11` 的 `Role::User => Forbidden`）；
+  同时 header 名被拼错成 `Authrization`（少了 `o`）→ 服务端 `headers.get(AUTHORIZATION)` 拿不到 → **一律 401** → 与错误期望**恰好吻合**，
+  **测试通过**。一个错的期望值碰上一个真 bug，绿色完全无意义。改对 header 后它立刻变红（**当日已修**：header → `authorization`，期望值 → **403**）。
+  **"通过"只说明「实际 == 期望」，不说明「期望本身是对的」** —— 上一轮那条问的是"bug 出现时我会不会恰好也通过"，
+  这里要反过来问：**"我写下的这个期望值，真的是正确行为吗？"**
+- **弱断言的极端形态：断言恒真**（2026-10-15 实测）：`test_delete_me_then_404` 注销后拿 `email: "alice"`
+  （正确值是 `"alice@local"`）去登录、断言 **401** —— 但**邮箱本来就是错的**，用户删没删都是 401。
+  这条断言**零信息量**：注销功能彻底失效它也照样绿（**当日已改回正确邮箱**）。**断言必须能被"它本该抓住的那个 bug"弄红**，否则不如不写。
+  （同一测试里 `GET /users/{id}` → 404 那条**是**有效的，两相对照正好说明"有效/无效断言"长什么样。）
   也就是说，一次请求内就自相矛盾：**凭据里的授权信息与库里的真实状态在窗口内分叉，且这个分叉会直接泄漏进响应**。
   推论：凡"凭据带授权字段 + 响应带同一字段"，就一定会出现这种肉眼可见的矛盾；要么接受（学习阶段），要么把授权改成**回库查一次**（放弃免查库）
 - **`query_as!` 宏看不到目标类型的字段定义**：它只能从 SQL 列的声明类型推断 Rust 类型、再用 `.into()` 桥接到结构体字段。SQLite 把 TEXT 推断为 `String`，
@@ -1141,8 +1276,16 @@ V3  继续长
    - **f. 熟悉代码清单** —— **本阶段正事，见下方 6f**
 7. **T2**：HTTP 层测试补 401 / 403 / 201 / 409 的状态码断言与 `CurrentUser` 失败路径 —— **前置全就位**（lib.rs ✅ / `tower` ✅ 已在 `[dev-dependencies]`）。
    📋 **执行清单见 §4.9**（2026-10-12 定案：只给问题不给答案，含 11 步请求顺序 + 要自答的 6 个问题 + 3 个坑）；
-   另含 **C.1 手工走查链 → 测试的拆分模型**（2026-10-13：链 → setup + 独立测试）。
-   现状 ⬜ **未开始**（§3.4 里 T2 不在暂缓表内，只是排在 6f 之后）。
+   另含 **B.1 请求/响应两端编解码**（2026-10-13：`.body()` 的 `&'static str` 限制 / 缺 `content-type` → 415 /
+   响应 DTO 无 `Deserialize`）、**C.1 手工走查链 → 测试的拆分模型**（链 → setup + 独立测试）与
+   **C.2 helper 分层**（L0/L1/L2 + `_ok` 命名 + **L1 返回 `Bytes` 而非 `Value`**，2026-10-14）。
+   现状 ✅ **已完成（2026-10-15）**：`tests/` 已建，**17 条集成测试全绿**（21 + 17 = 38 passed，零 warning）——
+   §4.9·C 的 11 步全覆盖（含 **`GET /admin/others` → 404**，即 6f·B 第三条；admin 链走"先提权后登录"时序）；
+   helper 已按 **C.2** 分三层（L0 `test_state` / L1 `send -> (StatusCode, Bytes)` / L2 `register_ok`·`login_ok`）。
+   ⚠️ **三处初版弱断言同日均已修正**（不影响绿）—— 见 §4.9·C.2「📌 现状」：
+  ① `test_delete_me_then_404` 的登录邮箱写错导致**断言恒真** → 已改对；
+  ② 补上"注销后**旧 token** 再打 `/me` → 404"（"靠查库兜底"的直接证据）；
+  ③ `test_change_pwd_success` 末尾多余的 `login_ok`（"新密码可登录"按 C.1 归 T1）→ 已删。
 8. `git commit` 收尾 → 开新仓库做 Agent 的 V0
 
 ### 6f. 熟悉代码清单（2026-10-11 起 —— 本阶段的正事）
@@ -1150,9 +1293,10 @@ V3  继续长
 > **原则：读代码只能确认"看起来对"，跑一遍才知道真的对。** 何况 admin 链上有两条**只有执行才能看见**的事实
 > （三态码、提权不即时生效）；而 `data/users.db` 原本 **0 用户**，等于这条链从未被启动过。
 >
-> **✅ 进度（2026-10-12）：A、B 已实测完成；C 未跑；B 的第三条（`route_layer` → 404）未跑。**
-> 造账号走的是**方案 2**（先 `POST /auth/register` 再 `sqlite3 UPDATE` 提权），服务端口 `3000`。
-> 库内现有 `1 root@local admin` / `2 alice@local user`（`alice@local` / `user12345` 保留给 T2 测 403）。
+> **✅ 进度（2026-10-12 → 10-15）：A、B、C 全部完成，B 的第三条（`route_layer` → 404）也已完成。**
+> 10-12 手动走查完成 A/B（造账号走**方案 2**：先 `POST /auth/register` 再 `sqlite3 UPDATE` 提权；服务端口 `3000`；
+> 库内留下 `1 root@local admin` / `2 alice@local user` 作 403 素材）；
+> 10-15 由 **T2** 补完 C 与 B 第三条（**`test_admin_other` → 404**，见 §4.9·C 第 10 步 / §4.9·C.2 现状）。
 
 **前置：先造出一个 admin（二选一）**
 
@@ -1176,19 +1320,21 @@ UPDATE users SET role='admin' WHERE email='你的邮箱';
 | 带普通用户 token | **403** | ✅ **403** | 命中 `require_admin` 的 `Role::User` 分支 → **授权**层拦截 |
 | 带 admin token | **200** + 全量列表 | ✅ **200** | 两层都过 + `get_all_users` 接线正确（这里的 `role` 是**管理员视角**该看到的，合理 —— 别与 **遗留点 8** 的匿名泄露混为一谈） |
 
-**B. ✅ 已完成（2026-10-12）：两个"撞一次就记住"的点**
+**B. ✅ 已完成（2026-10-12 + 2026-10-15）：两个"撞一次就记住"的点**
 
 - **★ 提权不即时生效** —— `UPDATE role='admin'` 之后**必须重新登录**换新 token；拿旧 token 会一直吃 **403**。
   实测链路：`token A`（登录时 `role="user"`）→ 提权 alice → **旧 token A 打 `/admin/users` 仍 403** → 重新登录得 `token B` → **200**。
   这正是 **3.3⑥** 那条权衡（免查库 ⇄ 角色变更延迟）的现场验证 —— 亲手撞一次胜过读十遍。
+  **2026-10-15 又在自动化测试里撞了第三次**：`test_admin_access_success` 起初写成"先 login 后提权"→ 403；
+  改成"先提权后 login"才 200。两种时序已写进 **§4.9·C 表下方那条 ⚠️**。
 - **★ 反向也成立，且更值得记：降权不即时生效** —— 降权 alice（admin→user）后拿**旧 `token B`** 打 `/admin/users`
   → 仍是 **200**（旧 token 到过期前一直有效）。**同一响应里还有个微妙现象**：返回体中 alice 的 `role` 已显示 `"user"`（**数据读库里的新值**），
   但请求被**放行**（**授权读 token 里的旧值**）—— 一个请求里"授权用旧值、数据用新值"同时成立。
   这就是那条不一致窗口的**可观测形态**，已提炼进 **第八节**。
-- ⬜ **`route_layer` 只对已匹配的路由生效**（**未跑**）：访问一个**不存在**的 `/admin/xxx` → 期望 **404 而不是 401/403**。
-  这是它和 `layer` 的区别（见第八节末）。补跑成本极低（一条 `curl`），可顺手做掉。
+- ✅ **`route_layer` 只对已匹配的路由生效**（**2026-10-15 由 T2 覆盖**）：访问一个**不存在**的 `/admin/xxx` → 拿到 **404 而不是 401/403**。
+  这就是它和 `layer` 的区别（见第八节末）。测试落点 = `tests/http.rs::test_admin_other`（§4.9·C 第 10 步）。
 
-**C. ⬜ 补齐第二节验收清单的最后三条**（10-09 只跑通了第 1-6 条；**截至 2026-10-12 仍未跑**，留待 T2）
+**C. ✅ 已完成（2026-10-15，由 T2 落地）—— 补齐第二节验收清单的最后三条**（10-09 只跑通了第 1-6 条）
 
 ```
 register → login → PATCH /me（只改 name，email/message 不变）
@@ -1199,6 +1345,14 @@ register → login → PATCH /me（只改 name，email/message 不变）
 > **⚠️ 别把这条链整条写进一条测试** —— 它是**手动走查脚本**，不是测试设计。
 > 落成自动化测试的**拆分模型见 §4.9·C.1**（链 → setup + 独立测试，2026-10-13 定案）。
 > 另：第 8 条那句"且新密码可登录"已被 T1 覆盖，T2 不重复（同 C.1）。
+>
+> **✅ 2026-10-15 落地结果**：拆成 `test_patch_me_name_only` / `test_change_pwd_wrong_old` / `test_change_pwd_success` /
+> `test_delete_me_then_404` **四条**（全绿）。**同日修正**了初版的两处偏差：
+> ① 第 3 行的"**带旧 token** 再访问 → 404"现在**真的按原意测了** —— `test_delete_me_then_404` 末尾拿**同一旧 token** 打 `/me`，
+> 期望 **404**（token 验签通过、但 `auth::get_user` 查不到人 —— "注销后靠查库兜底"的直接证据）；
+> 初版误测成「登录失败（且邮箱写错、**恒真**）+ 匿名 `GET /users/{id}` → 404」，两点都已改。
+> ② `test_change_pwd_success` 末尾多验的"新密码可登录"**已删**（那句按收手原则归 T1，T2 只断言 200）。
+> 完整清单见 **§4.9·C.2「📌 现状」**。
 
 **D. 顺手清理（两处，其中一处已完成）**
 
