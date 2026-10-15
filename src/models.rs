@@ -1,17 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, sqlx::Type)]
+#[sqlx(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    User,
+    Admin,
+}
+
 #[derive(Clone)]
 pub struct UserEntity {
     pub id: i64,
+    pub role: Role,
     pub name: String,
     pub email: String,
     pub password_hash: String,
     pub message: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct UserResponse {
     pub id: i64,
+    pub role: Role,
     pub name: String,
     pub email: String,
     pub message: Option<String>,
@@ -21,8 +31,26 @@ impl From<UserEntity> for UserResponse {
     fn from(value: UserEntity) -> Self {
         Self {
             id: value.id,
+            role: value.role,
             name: value.name,
             email: value.email,
+            message: value.message,
+        }
+    }
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct PublicUserResponse {
+    pub id: i64,
+    pub name: String,
+    pub message: Option<String>,
+}
+
+impl From<UserEntity> for PublicUserResponse {
+    fn from(value: UserEntity) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
             message: value.message,
         }
     }
